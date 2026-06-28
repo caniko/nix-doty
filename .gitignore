@@ -1,0 +1,14 @@
+# Rust / cargo
+/target
+Cargo.lock.bak
+
+# Nix
+/result
+/result-*
+/.direnv
+/.pre-commit-config.yaml
+
+# Editors
+*.swp
+.vscode/
+.idea/
