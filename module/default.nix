@@ -12,7 +12,10 @@ let
 in {
   options.services.doty = {
     enable = lib.mkEnableOption "doty cleanup orchestrator";
-    package = lib.mkPackageOption pkgs "doty" { default = []; };
+    package = lib.mkOption {
+      type = lib.types.package;
+      description = "doty package to use";
+    };
     schedule = lib.mkOption {
       type = lib.types.str;
       default = "weekly";

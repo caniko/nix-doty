@@ -63,6 +63,9 @@
       }
     ))
     // {
-      nixosModules.default = import ./module/default.nix;
+      nixosModules.default = { pkgs, ... }: {
+        imports = [ ./module/default.nix ];
+        services.doty.package = self.packages.${pkgs.system}.default;
+      };
     };
 }
