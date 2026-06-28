@@ -60,6 +60,33 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Reclaim disk space on full mounts (dry-run by default)
+    Reclaim {
+        /// Only plan/reclaim for specific mount point
+        #[arg(short, long, value_name = "MOUNT")]
+        mount: Option<String>,
+        /// Usage threshold percentage (default: 85)
+        #[arg(long, default_value = "85.0")]
+        threshold: f64,
+        /// Minimum free space target in bytes (e.g. "1073741824" for 1 GiB)
+        #[arg(long, value_name = "BYTES")]
+        min_free_bytes: Option<u64>,
+        /// Minimum free space target as percentage
+        #[arg(long, value_name = "PCT")]
+        min_free_pct: Option<f64>,
+        /// Actually perform reclamation (default is dry-run)
+        #[arg(long)]
+        apply: bool,
+        /// Bypass tier gating for confirm/risky targets
+        #[arg(long)]
+        force: bool,
+        /// Include all mounts, not just those above threshold
+        #[arg(long)]
+        all: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 impl Cli {
@@ -69,6 +96,9 @@ impl Cli {
             Command::Status { target, variant, json } => crate::commands::status(target, variant, json),
             Command::Run { target, variant, apply, force, json } => crate::commands::run(target, variant, apply, force, json),
             Command::Doctor { config, json } => crate::commands::doctor(&config, json),
+            Command::Reclaim { mount, threshold, min_free_bytes, min_free_pct, apply, force, all, json } => {
+                crate::commands::reclaim(mount, threshold, min_free_bytes, min_free_pct, apply, force, all, json)
+            },
         }
     }
 }

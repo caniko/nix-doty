@@ -301,6 +301,49 @@ pub fn doctor(config_path: &str, json: bool) -> Result<()> {
     Ok(())
 }
 
+pub fn reclaim(
+    mount: Option<String>,
+    threshold: f64,
+    min_free_bytes: Option<u64>,
+    min_free_pct: Option<f64>,
+    apply: bool,
+    force: bool,
+    all: bool,
+    json: bool,
+) -> Result<()> {
+    let config = crate::reclaim::ReclaimConfig {
+        mount,
+        threshold_pct: threshold,
+        min_free_bytes,
+        min_free_pct,
+        apply,
+        force,
+        json,
+        all,
+    };
+
+    let mut plans = crate::reclaim::plan(&config)?;
+
+    if plans.is_empty() {
+        println!("No mounts exceed the threshold ({}%). Nothing to reclaim.", threshold);
+        return Ok(());
+    }
+
+    if apply {
+        for plan in &mut plans {
+            crate::reclaim::execute(plan, &config)?;
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&plans)?);
+    } else {
+        print!("{}", crate::reclaim::format_plan_human(&plans));
+    }
+
+    Ok(())
+}
+
 fn human_size(bytes: u64) -> String {
     const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut size = bytes as f64;

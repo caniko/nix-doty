@@ -13,6 +13,10 @@ mod qbittorrent_torrents;
 mod pink_raven_workers;
 mod immich_temporal;
 mod btrfs_snapshots;
+mod steampipe_state;
+mod chessbender_state;
+mod opencode_cache;
+mod user_cache;
 
 pub use nix_store_gc::NIX_STORE_GC;
 pub use boot_generations::BOOT_GENERATIONS;
@@ -29,3 +33,7 @@ pub use qbittorrent_torrents::QBITTORRENT_TORRENTS;
 pub use pink_raven_workers::PINK_RAVEN_WORKERS;
 pub use immich_temporal::IMMICH_TEMPORAL;
 pub use btrfs_snapshots::BTRFS_SNAPSHOTS;
+pub use steampipe_state::STEAMPIPE_STATE;
+pub use chessbender_state::CHESSBENDER_STATE;
+pub use opencode_cache::OPENCODE_CACHE;
+pub use user_cache::USER_CACHE;

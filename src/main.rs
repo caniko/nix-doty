@@ -2,6 +2,8 @@ mod cli;
 mod commands;
 mod exec;
 pub mod framework;
+pub mod mount;
+pub mod reclaim;
 pub mod registry;
 pub mod targets;
 
