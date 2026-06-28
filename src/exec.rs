@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
+use std::time::SystemTime;
 
 pub fn run(cmd: &[&str]) -> Result<String> {
     if cmd.is_empty() {
@@ -88,4 +89,75 @@ pub fn dir_entry_count(path: &str) -> Result<u64> {
         .filter_map(|e| e.ok())
         .count() as u64;
     Ok(count)
+}
+
+pub fn all_user_subdirs(subpath: &str) -> Vec<String> {
+    let mut dirs: Vec<String> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir("/home") {
+        for entry in entries.flatten() {
+            let user = entry.file_name();
+            let path = format!("/home/{}/{}", user.to_string_lossy(), subpath);
+            if Path::new(&path).exists() {
+                dirs.push(path);
+            }
+        }
+    }
+    let root_path = format!("/root/{subpath}");
+    if Path::new(&root_path).exists() {
+        dirs.push(root_path);
+    }
+    dirs.sort();
+    dirs.dedup();
+    dirs
+}
+
+pub fn remove_stale_entries(
+    dir: &str,
+    max_age_days: u32,
+    max_depth: u32,
+) -> Result<(u64, u64)> {
+    let cutoff = chrono::Utc::now()
+        - chrono::Duration::days(max_age_days as i64);
+    let mut removed: u64 = 0;
+    let mut freed: u64 = 0;
+    remove_stale_inner(Path::new(dir), &cutoff, max_depth, 0, &mut removed, &mut freed)
+        .map(|_| (removed, freed))
+}
+
+fn remove_stale_inner(
+    dir: &Path,
+    cutoff: &chrono::DateTime<chrono::Utc>,
+    max_depth: u32,
+    depth: u32,
+    removed: &mut u64,
+    freed: &mut u64,
+) -> Result<()> {
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = entry.metadata()?;
+        let modified = metadata.modified().unwrap_or_else(|_| SystemTime::UNIX_EPOCH);
+        let age: chrono::DateTime<chrono::Utc> = modified.into();
+        if age >= *cutoff {
+            continue;
+        }
+        if metadata.is_dir() {
+            if depth < max_depth {
+                remove_stale_inner(&path, cutoff, max_depth, depth + 1, removed, freed)?;
+            }
+            if let Ok(size) = total_dir_size(&path.to_string_lossy()) {
+                *freed += size;
+            }
+            let _ = std::fs::remove_dir_all(&path);
+            *removed += 1;
+        } else {
+            *freed += metadata.len();
+            let _ = std::fs::remove_file(&path);
+            *removed += 1;
+        }
+    }
+    Ok(())
 }
