@@ -43,7 +43,7 @@ impl Variant for SizeCap {
                 errors: vec!["dry-run: would run journalctl --vacuum-size=256M".into()],
             });
         }
-        let before = exec::run_stdout(&["journalctl", "--disk-usage"]).ok();
+        let _before = exec::run_stdout(&["journalctl", "--disk-usage"]).ok();
         exec::run_stdout(&["sudo", "journalctl", "--vacuum-size=256M"])?;
         Ok(ApplyReport {
             framework: self.framework().name(),

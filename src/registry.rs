@@ -1,21 +1,21 @@
 use crate::framework::{Framework, Variant};
 
 pub static ALL_FRAMEWORKS: &[&dyn Framework] = &[
-    &crate::targets::NIX_STORE_GC,
-    &crate::targets::BOOT_GENERATIONS,
-    &crate::targets::BUILD_MEMORY_LOGS,
-    &crate::targets::JOURNALD_VACUUM,
-    &crate::targets::FAILED_UNITS,
-    &crate::targets::CGROUP_RESET,
-    &crate::targets::LLAMA_MODELS,
-    &crate::targets::COMFYUI_STATE,
-    &crate::targets::UV_CACHE,
-    &crate::targets::DNS_RUNTIME_CACHE,
-    &crate::targets::FREEDESKTOP_TRASH,
-    &crate::targets::QBITTORRENT_TORRENTS,
-    &crate::targets::PINK_RAVEN_WORKERS,
-    &crate::targets::IMMICH_TEMPORAL,
-    &crate::targets::BTRFS_SNAPSHOTS,
+    crate::targets::NIX_STORE_GC,
+    crate::targets::BOOT_GENERATIONS,
+    crate::targets::BUILD_MEMORY_LOGS,
+    crate::targets::JOURNALD_VACUUM,
+    crate::targets::FAILED_UNITS,
+    crate::targets::CGROUP_RESET,
+    crate::targets::LLAMA_MODELS,
+    crate::targets::COMFYUI_STATE,
+    crate::targets::UV_CACHE,
+    crate::targets::DNS_RUNTIME_CACHE,
+    crate::targets::FREEDESKTOP_TRASH,
+    crate::targets::QBITTORRENT_TORRENTS,
+    crate::targets::PINK_RAVEN_WORKERS,
+    crate::targets::IMMICH_TEMPORAL,
+    crate::targets::BTRFS_SNAPSHOTS,
 ];
 
 pub fn find_framework(name: &str) -> Option<&'static dyn Framework> {

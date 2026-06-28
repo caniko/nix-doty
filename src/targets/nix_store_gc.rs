@@ -22,7 +22,7 @@ impl Variant for NhClean {
     fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
     fn tier(&self) -> Tier { Tier::Safe }
     fn inspect(&self) -> Result<Inspection> {
-        let (store_entries, gc_roots) = if let Ok(out) = exec::run_stdout(&["ls", "-1", "/nix/store"]) {
+        let (store_entries, _gc_roots) = if let Ok(out) = exec::run_stdout(&["ls", "-1", "/nix/store"]) {
             let count = out.lines().count() as u64;
             let size = exec::total_dir_size("/nix/store").ok();
             (count, size)
@@ -44,7 +44,7 @@ impl Variant for NhClean {
     }
     fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
         if dry_run {
-            let bytes = exec::total_dir_size("/nix/store").unwrap_or(0);
+            let _bytes = exec::total_dir_size("/nix/store").unwrap_or(0);
             let entries = exec::run_stdout(&["ls", "-1", "/nix/store"]).ok()
                 .map(|s| s.lines().count() as u64).unwrap_or(0);
             return Ok(ApplyReport {

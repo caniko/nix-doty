@@ -137,7 +137,7 @@ pub fn status(target: Option<String>, variant: Option<String>, json: bool) -> Re
                 None => "?",
             };
             let size = i.size_bytes.map(|b| human_size(b)).unwrap_or_else(|| "-".into());
-            let age = i.age_oldest_days.map(|d| format!("{d}d")).unwrap_or_else(|| "-".into());
+            let _age = i.age_oldest_days.map(|d| format!("{d}d")).unwrap_or_else(|| "-".into());
             let would_remove = if i.would_remove > 0 { i.would_remove.to_string() } else { "-".into() };
             println!("{:<28} {:<6} {:<12} {:<10} {:<8} {}", key, tier, i.path, size, would_remove, i.notes);
         }
@@ -234,8 +234,9 @@ pub fn run(
 pub fn doctor(config_path: &str, json: bool) -> Result<()> {
     let config_content = std::fs::read_to_string(config_path)
         .map_err(|e| anyhow::anyhow!("cannot read {config_path}: {e}"))?;
-    let configured: Vec<DoctorTarget> = serde_json::from_str(&config_content)
-        .map_err(|e| anyhow::anyhow!("cannot parse {config_path}: {e}"))?
+    let parsed: serde_json::Value = serde_json::from_str(&config_content)
+        .map_err(|e| anyhow::anyhow!("cannot parse {config_path}: {e}"))?;
+    let configured: Vec<DoctorTarget> = parsed
         .get("targets")
         .map(|v| {
             if let Some(arr) = v.as_array() {

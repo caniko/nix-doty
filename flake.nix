@@ -1,17 +1,11 @@
 {
   description = "Do That Yourself: a NixOS-driven cleanup orchestrator";
 
-  nixConfig = {
-    extra-substituters = ["https://attic.candee.baby/canix"];
-    extra-trusted-public-keys = ["canix:e/lZjnNC0xQB6r0Q9n+i+CEvQqA/hDHZZ3EjtYbnEhI="];
-  };
-
   inputs = {
-    rs-harbor.url = "git+https://codeberg.org/caniko/rs-harbor.git";
-    nixpkgs.follows = "rs-harbor/nixpkgs";
-    rust-overlay.follows = "rs-harbor/rust-overlay";
-    crane.follows = "rs-harbor/crane";
-    flake-utils.follows = "rs-harbor/flake-utils";
+    nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
+    rust-overlay.url = "github:oxalica/rust-overlay";
+    crane.url = "github:ipetkov/crane";
+    flake-utils.url = "github:numtide/flake-utils";
   };
 
   outputs =
@@ -21,7 +15,6 @@
       crane,
       flake-utils,
       rust-overlay,
-      rs-harbor,
       ...
     }:
     (flake-utils.lib.eachDefaultSystem (
@@ -32,32 +25,21 @@
         };
         inherit (pkgs) lib;
 
-        toolchain = rs-harbor.lib.mkToolchain {
-          inherit pkgs;
-          channel = "stable";
+        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
+          extensions = ["rust-src" "rustfmt" "clippy"];
         };
-        inherit (toolchain) craneLib rustToolchain;
-        cross = rs-harbor.lib.mkCross {inherit pkgs system;};
-        cargoConfig = rs-harbor.lib.mkCargoConfig {
-          inherit pkgs;
-          channel = "stable";
-        };
+        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
 
         commonArgs = {
-          inherit (craneLib) cargoArtifacts;
-          inherit cargoConfig;
           src = craneLib.cleanCargoSource ./.;
-          doCheck = false;
+          strictDeps = true;
         };
 
-        cargoArtifacts = craneLib.buildDepsOnly (commonArgs // {
-          pname = "doty-deps";
-          cargoArtifacts = null;
-        });
+        cargoArtifacts = craneLib.buildDepsOnly commonArgs;
       in {
         packages = {
           default = craneLib.buildPackage (commonArgs // {
-            pname = "doty";
+            inherit cargoArtifacts;
             meta = {
               description = "Do That Yourself: NixOS cleanup orchestrator";
               license = lib.licenses.mit;
@@ -69,16 +51,13 @@
         };
 
         checks = {
-          default = craneLib.cargoClippy (commonArgs // {
-            pname = "doty-clippy";
+          clippy = craneLib.cargoClippy (commonArgs // {
+            inherit cargoArtifacts;
             cargoClippyExtraArgs = "-- -D warnings";
           });
-
-          clippy = self.checks.${system}.default;
         };
 
-        devShells = rs-harbor.lib.mkDevShells {
-          inherit pkgs craneLib cross cargoConfig;
+        devShells.default = craneLib.devShell {
           packages = with pkgs; [nh];
         };
       }
