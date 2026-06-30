@@ -41,6 +41,7 @@
           default = craneLib.buildPackage (commonArgs // {
             inherit cargoArtifacts;
             meta = {
+              mainProgram = "doty";
               description = "Do That Yourself: NixOS cleanup orchestrator";
               license = lib.licenses.mit;
               maintainers = ["caniko"];

@@ -2,12 +2,19 @@
 
 let
   cfg = config.services.doty;
+  targetEntries =
+    lib.flatten (
+      lib.mapAttrsToList (
+        name: t:
+          map (v: {
+            inherit name;
+            variant = v.variant;
+            settings = v.settings or {};
+          }) t.variants
+      ) (lib.filterAttrs (n: t: t.enable) cfg.targets)
+    );
   targetsJson = pkgs.writeText "doty-targets.json" (builtins.toJSON {
-    targets = lib.mapAttrsToList (name: t: {
-      inherit name;
-      variant = t.variant;
-      settings = t.settings or {};
-    }) (lib.filterAttrs (n: t: t.enable) cfg.targets);
+    targets = targetEntries;
   });
 in {
   options.services.doty = {
@@ -26,14 +33,22 @@ in {
       type = lib.types.attrsOf (lib.types.submodule {
         options = {
           enable = lib.mkEnableOption "this doty cleanup target";
-          variant = lib.mkOption {
-            type = lib.types.str;
-            description = "Cleanup variant to use (e.g. nh-clean, size-cap)";
-          };
-          settings = lib.mkOption {
-            type = lib.types.attrsOf lib.types.anything;
-            default = {};
-            description = "Variant-specific configuration";
+          variants = lib.mkOption {
+            type = lib.types.listOf (lib.types.submodule {
+              options = {
+                variant = lib.mkOption {
+                  type = lib.types.str;
+                  description = "Cleanup variant to use (e.g. nh-clean, size-cap)";
+                };
+                settings = lib.mkOption {
+                  type = lib.types.attrsOf lib.types.anything;
+                  default = {};
+                  description = "Variant-specific configuration";
+                };
+              };
+            });
+            default = [];
+            description = "Multiple cleanup variants to configure for this framework";
           };
         };
       });
@@ -43,6 +58,11 @@ in {
   };
 
   config = lib.mkIf cfg.enable {
+    assertions = lib.mapAttrsToList (name: t: {
+      assertion = t.variants != [];
+      message = "services.doty.targets.${name} must set variants";
+    }) (lib.filterAttrs (n: t: t.enable) cfg.targets);
+
     environment.systemPackages = [ cfg.package ];
     environment.etc."doty/targets.json".source = targetsJson;
 
