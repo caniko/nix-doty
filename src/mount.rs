@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
-use std::path::Path;
 use crate::exec;
+use anyhow::Result;
+use std::path::Path;
 
 #[derive(Debug, Clone)]
 pub struct MountInfo {
@@ -23,9 +23,13 @@ impl MountInfo {
 
 pub fn read_mounts() -> Result<Vec<MountInfo>> {
     let out = exec::run_stdout(&[
-        "df", "--exclude-type=tmpfs", "--exclude-type=devtmpfs",
-        "--exclude-type=devfs", "--exclude-type=overlay",
-        "-B1", "--output=source,target,size,used,avail,fstype",
+        "df",
+        "--exclude-type=tmpfs",
+        "--exclude-type=devtmpfs",
+        "--exclude-type=devfs",
+        "--exclude-type=overlay",
+        "-B1",
+        "--output=source,target,size,used,avail,fstype",
     ])?;
 
     let mut mounts: Vec<MountInfo> = Vec::new();
@@ -41,7 +45,11 @@ pub fn read_mounts() -> Result<Vec<MountInfo>> {
 
         let device = parts[0].to_string();
         let mount_point = parts[1].trim_end_matches('/');
-        let mount_point = if mount_point.is_empty() { "/" } else { mount_point };
+        let mount_point = if mount_point.is_empty() {
+            "/"
+        } else {
+            mount_point
+        };
         let total_bytes = parts[2].parse::<u64>().unwrap_or(0);
         let used_bytes = parts[3].parse::<u64>().unwrap_or(0);
         let available_bytes = parts[4].parse::<u64>().unwrap_or(0);
@@ -99,8 +107,12 @@ pub fn df(mount: &str) -> Result<MountInfo> {
     let mount = mount.trim_end_matches('/');
     let mount = if mount.is_empty() { "/" } else { mount };
     let out = exec::run_stdout(&[
-        "df", "--exclude-type=tmpfs", "--exclude-type=devtmpfs",
-        "-B1", "--output=source,target,size,used,avail,fstype", mount,
+        "df",
+        "--exclude-type=tmpfs",
+        "--exclude-type=devtmpfs",
+        "-B1",
+        "--output=source,target,size,used,avail,fstype",
+        mount,
     ])?;
 
     for line in out.lines().skip(1) {

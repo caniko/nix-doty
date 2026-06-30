@@ -1,7 +1,7 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 
-use crate::framework::{ApplyReport, Inspection, Tier};
+use crate::framework::Tier;
 use crate::mount::{self, MountInfo};
 use crate::registry;
 
@@ -66,7 +66,8 @@ pub fn plan(config: &ReclaimConfig) -> Result<Vec<ReclaimPlan>> {
     let all_mounts = mount::read_mounts()?;
 
     let problem_mounts = if let Some(ref m) = config.mount {
-        let mi = all_mounts.iter()
+        let mi = all_mounts
+            .iter()
             .find(|mnt| mnt.mount_point == *m)
             .cloned()
             .or_else(|| mount::df(m).ok());
@@ -77,7 +78,8 @@ pub fn plan(config: &ReclaimConfig) -> Result<Vec<ReclaimPlan>> {
     } else if config.all {
         all_mounts.clone()
     } else {
-        all_mounts.iter()
+        all_mounts
+            .iter()
             .filter(|m| m.usage_pct() >= config.threshold_pct)
             .cloned()
             .collect()
@@ -117,7 +119,8 @@ pub fn plan(config: &ReclaimConfig) -> Result<Vec<ReclaimPlan>> {
 }
 
 fn same_device_group(problem: &[MountInfo], all: &[MountInfo]) -> Vec<MountInfo> {
-    let device_ids: std::collections::HashSet<&str> = problem.iter().map(|m| m.device.as_str()).collect();
+    let device_ids: std::collections::HashSet<&str> =
+        problem.iter().map(|m| m.device.as_str()).collect();
     all.iter()
         .filter(|m| device_ids.contains(m.device.as_str()))
         .cloned()
@@ -253,11 +256,13 @@ fn find_targets_for_mount_group(
                 Err(_) => continue,
             };
 
-            let target_mount = mount::mount_for_path(&inspection.path)
-                .unwrap_or_else(|| "/".to_string());
+            let target_mount =
+                mount::mount_for_path(&inspection.path).unwrap_or_else(|| "/".to_string());
 
             let mount_matches = target_mount == primary_mount.mount_point
-                || all_same_device.iter().any(|m| m.mount_point == target_mount);
+                || all_same_device
+                    .iter()
+                    .any(|m| m.mount_point == target_mount);
 
             if !mount_matches {
                 continue;
@@ -335,7 +340,7 @@ pub fn format_plan_human(plans: &[ReclaimPlan]) -> String {
             plan.targets.len(),
             human_size(plan.total_estimated_freed_bytes),
         ));
-        output.push_str("\n");
+        output.push('\n');
 
         if plan.targets.is_empty() {
             output.push_str("  No applicable targets found.\n");
@@ -372,14 +377,11 @@ pub fn format_plan_human(plans: &[ReclaimPlan]) -> String {
                 human_size(actual),
             ));
             if let Some(final_avail) = plan.final_available_bytes {
-                output.push_str(&format!(
-                    "  Final available: {}\n",
-                    human_size(final_avail),
-                ));
+                output.push_str(&format!("  Final available: {}\n", human_size(final_avail),));
             }
         }
 
-        output.push_str("\n");
+        output.push('\n');
     }
 
     output
