@@ -20,6 +20,12 @@ pub static ALL_FRAMEWORKS: &[&dyn Framework] = &[
     crate::targets::CHESSBENDER_STATE,
     crate::targets::OPENCODE_CACHE,
     crate::targets::USER_CACHE,
+    crate::targets::FORGEJO_RUNNER_CACHE,
+    crate::targets::SCCACHE_GARAGE,
+    crate::targets::MEDIA_STACK_STATE,
+    crate::targets::FOUNDRY_VTT_STATE,
+    crate::targets::OPENVSCODE_STATE,
+    crate::targets::PG_BACKUP_STATE,
 ];
 
 pub fn find_framework(name: &str) -> Option<&'static dyn Framework> {
@@ -28,5 +34,9 @@ pub fn find_framework(name: &str) -> Option<&'static dyn Framework> {
 
 pub fn find_variant(framework_name: &str, variant_name: &str) -> Option<&'static dyn Variant> {
     let framework = find_framework(framework_name)?;
-    framework.variants().iter().copied().find(|v| v.name() == variant_name)
+    framework
+        .variants()
+        .iter()
+        .copied()
+        .find(|v| v.name() == variant_name)
 }
