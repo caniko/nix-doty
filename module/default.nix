@@ -2,15 +2,27 @@
 
 let
   cfg = config.services.doty;
+  entriesForTarget =
+    name: t:
+      if t.variants != [] then
+        map (v: {
+          inherit name;
+          variant = v.variant;
+          settings = v.settings or {};
+        }) t.variants
+      else
+        [
+          {
+            inherit name;
+            variant = t.variant;
+            settings = t.settings;
+          }
+        ];
   targetEntries =
     lib.flatten (
       lib.mapAttrsToList (
         name: t:
-          map (v: {
-            inherit name;
-            variant = v.variant;
-            settings = v.settings or {};
-          }) t.variants
+          entriesForTarget name t
       ) (lib.filterAttrs (n: t: t.enable) cfg.targets)
     );
   targetsJson = pkgs.writeText "doty-targets.json" (builtins.toJSON {
@@ -33,6 +45,17 @@ in {
       type = lib.types.attrsOf (lib.types.submodule {
         options = {
           enable = lib.mkEnableOption "this doty cleanup target";
+          variant = lib.mkOption {
+            type = lib.types.nullOr lib.types.str;
+            default = null;
+            example = "clean";
+            description = "Single cleanup variant to use. Preserved for compatibility; prefer variants for new configuration.";
+          };
+          settings = lib.mkOption {
+            type = lib.types.attrsOf lib.types.anything;
+            default = {};
+            description = "Variant-specific configuration for the legacy single-variant form";
+          };
           variants = lib.mkOption {
             type = lib.types.listOf (lib.types.submodule {
               options = {
@@ -59,8 +82,8 @@ in {
 
   config = lib.mkIf cfg.enable {
     assertions = lib.mapAttrsToList (name: t: {
-      assertion = t.variants != [];
-      message = "services.doty.targets.${name} must set variants";
+      assertion = t.variants != [] || t.variant != null;
+      message = "services.doty.targets.${name} must set either variant or variants";
     }) (lib.filterAttrs (n: t: t.enable) cfg.targets);
 
     environment.systemPackages = [ cfg.package ];
