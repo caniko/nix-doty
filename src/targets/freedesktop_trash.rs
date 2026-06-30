@@ -1,6 +1,6 @@
-use anyhow::Result;
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
+use anyhow::Result;
 
 fn trash_dirs() -> Vec<String> {
     let mut dirs = Vec::new();
@@ -21,8 +21,12 @@ fn trash_dirs() -> Vec<String> {
 struct FreedesktopTrashFramework;
 
 impl Framework for FreedesktopTrashFramework {
-    fn name(&self) -> &'static str { "freedesktop-trash" }
-    fn summary(&self) -> &'static str { "Freedesktop Trash directories (per-user and volume)" }
+    fn name(&self) -> &'static str {
+        "freedesktop-trash"
+    }
+    fn summary(&self) -> &'static str {
+        "Freedesktop Trash directories (per-user and volume)"
+    }
     fn variants(&self) -> &[&'static dyn Variant] {
         &[&TrashEmpty]
     }
@@ -65,12 +69,19 @@ fn empty_trash_dir(td: &str) -> (u64, u64) {
 
 struct TrashEmpty;
 impl Variant for TrashEmpty {
-    fn name(&self) -> &'static str { "empty" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Confirm }
+    fn name(&self) -> &'static str {
+        "empty"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Confirm
+    }
     fn inspect(&self) -> Result<Inspection> {
         let dirs = trash_dirs();
-        let (total_files, total_size) = dirs.iter()
+        let (total_files, total_size) = dirs
+            .iter()
             .map(|d| inspect_trash_dir(d))
             .fold((0, 0), |(ac, ab), (c, b)| (ac + c, ab + b));
         Ok(Inspection {
@@ -80,20 +91,30 @@ impl Variant for TrashEmpty {
             size_bytes: Some(total_size),
             age_oldest_days: None,
             would_remove: total_files,
-            notes: format!("{total_files} items across {count} trash dirs", count = dirs.len()),
+            notes: format!(
+                "{total_files} items across {count} trash dirs",
+                count = dirs.len()
+            ),
         })
     }
     fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
         let dirs = trash_dirs();
         if dry_run {
-            let (files, bytes) = dirs.iter()
+            let (files, bytes) = dirs
+                .iter()
                 .map(|d| inspect_trash_dir(d))
                 .fold((0, 0), |(ac, ab), (c, b)| (ac + c, ab + b));
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),
-                removed: 0, freed_bytes: 0, skipped: files,
-                errors: vec![format!("dry-run: would empty {files} items from {count} trash dirs ({})", fmt_bytes(bytes), count = dirs.len())],
+                removed: 0,
+                freed_bytes: 0,
+                skipped: files,
+                errors: vec![format!(
+                    "dry-run: would empty {files} items from {count} trash dirs ({})",
+                    fmt_bytes(bytes),
+                    count = dirs.len()
+                )],
             });
         }
         let mut total_removed = 0u64;

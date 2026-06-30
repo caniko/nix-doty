@@ -1,12 +1,16 @@
-use anyhow::Result;
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
+use anyhow::Result;
 
 struct NixStoreGcFramework;
 
 impl Framework for NixStoreGcFramework {
-    fn name(&self) -> &'static str { "nix-store-gc" }
-    fn summary(&self) -> &'static str { "Nix store garbage collection and optimisation" }
+    fn name(&self) -> &'static str {
+        "nix-store-gc"
+    }
+    fn summary(&self) -> &'static str {
+        "Nix store garbage collection and optimisation"
+    }
     fn variants(&self) -> &[&'static dyn Variant] {
         &[&NhClean, &NixCollectGarbage, &Optimise]
     }
@@ -18,15 +22,20 @@ pub static NIX_STORE_GC: &dyn Framework = &FRAMEWORK;
 
 struct NhClean;
 impl Variant for NhClean {
-    fn name(&self) -> &'static str { "nh-clean" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Safe }
+    fn name(&self) -> &'static str {
+        "nh-clean"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
     fn inspect(&self) -> Result<Inspection> {
-        let (store_entries, _gc_roots) = if let Ok(out) = exec::run_stdout(&["ls", "-1", "/nix/store"]) {
-            let count = out.lines().count() as u64;
-            let size = exec::total_dir_size("/nix/store").ok();
-            (count, size)
-        } else { (0, None) };
+        let store_entries = exec::run_stdout(&["ls", "-1", "/nix/store"])
+            .ok()
+            .map(|s| s.lines().count() as u64)
+            .unwrap_or(0);
         let notes = if exec::path_exists("/run/current-system") {
             "nh clean --keep-since 14d would prune old generations".into()
         } else {
@@ -44,9 +53,10 @@ impl Variant for NhClean {
     }
     fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
         if dry_run {
-            let _bytes = exec::total_dir_size("/nix/store").unwrap_or(0);
-            let entries = exec::run_stdout(&["ls", "-1", "/nix/store"]).ok()
-                .map(|s| s.lines().count() as u64).unwrap_or(0);
+            let entries = exec::run_stdout(&["ls", "-1", "/nix/store"])
+                .ok()
+                .map(|s| s.lines().count() as u64)
+                .unwrap_or(0);
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),
@@ -56,25 +66,29 @@ impl Variant for NhClean {
                 errors: vec!["dry-run: would run nh clean --keep-since 14d".into()],
             });
         }
-        let before = exec::total_dir_size("/nix/store").unwrap_or(0);
         exec::run_stdout(&["nh", "clean", "--keep-since", "14d"])?;
-        let after = exec::total_dir_size("/nix/store").unwrap_or(0);
         Ok(ApplyReport {
             framework: self.framework().name(),
             variant: self.name(),
             removed: 1,
-            freed_bytes: before.saturating_sub(after),
+            freed_bytes: 0,
             skipped: 0,
-            errors: vec![],
+            errors: vec!["freed bytes not measured; avoided full /nix/store scan".into()],
         })
     }
 }
 
 struct NixCollectGarbage;
 impl Variant for NixCollectGarbage {
-    fn name(&self) -> &'static str { "nix-collect-garbage" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Safe }
+    fn name(&self) -> &'static str {
+        "nix-collect-garbage"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
     fn inspect(&self) -> Result<Inspection> {
         Ok(Inspection {
             framework: self.framework().name(),
@@ -91,29 +105,35 @@ impl Variant for NixCollectGarbage {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),
-                removed: 0, freed_bytes: 0, skipped: 1,
+                removed: 0,
+                freed_bytes: 0,
+                skipped: 1,
                 errors: vec!["dry-run: would run nix-collect-garbage -d".into()],
             });
         }
-        let before = exec::total_dir_size("/nix/store").unwrap_or(0);
         exec::run_stdout(&["sudo", "nix-collect-garbage", "-d"])?;
-        let after = exec::total_dir_size("/nix/store").unwrap_or(0);
         Ok(ApplyReport {
             framework: self.framework().name(),
             variant: self.name(),
             removed: 1,
-            freed_bytes: before.saturating_sub(after),
+            freed_bytes: 0,
             skipped: 0,
-            errors: vec![],
+            errors: vec!["freed bytes not measured; avoided full /nix/store scan".into()],
         })
     }
 }
 
 struct Optimise;
 impl Variant for Optimise {
-    fn name(&self) -> &'static str { "optimise" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Safe }
+    fn name(&self) -> &'static str {
+        "optimise"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
     fn inspect(&self) -> Result<Inspection> {
         Ok(Inspection {
             framework: self.framework().name(),
@@ -130,7 +150,9 @@ impl Variant for Optimise {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),
-                removed: 0, freed_bytes: 0, skipped: 1,
+                removed: 0,
+                freed_bytes: 0,
+                skipped: 1,
                 errors: vec!["dry-run: would run nix store optimise".into()],
             });
         }
@@ -138,7 +160,9 @@ impl Variant for Optimise {
         Ok(ApplyReport {
             framework: self.framework().name(),
             variant: self.name(),
-            removed: 0, freed_bytes: 0, skipped: 0,
+            removed: 0,
+            freed_bytes: 0,
+            skipped: 0,
             errors: vec![],
         })
     }

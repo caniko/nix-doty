@@ -1,12 +1,16 @@
-use anyhow::Result;
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
+use anyhow::Result;
 
 struct FailedUnitsFramework;
 
 impl Framework for FailedUnitsFramework {
-    fn name(&self) -> &'static str { "failed-units" }
-    fn summary(&self) -> &'static str { "Systemd units in failed state" }
+    fn name(&self) -> &'static str {
+        "failed-units"
+    }
+    fn summary(&self) -> &'static str {
+        "Systemd units in failed state"
+    }
     fn variants(&self) -> &[&'static dyn Variant] {
         &[&ResetFailed, &RestartFailed]
     }
@@ -29,9 +33,15 @@ fn list_failed_units() -> Vec<String> {
 
 struct ResetFailed;
 impl Variant for ResetFailed {
-    fn name(&self) -> &'static str { "reset-failed" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Safe }
+    fn name(&self) -> &'static str {
+        "reset-failed"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
     fn inspect(&self) -> Result<Inspection> {
         let failed = list_failed_units();
         let count = failed.len() as u64;
@@ -59,7 +69,10 @@ impl Variant for ResetFailed {
                 removed: 0,
                 freed_bytes: 0,
                 skipped: count,
-                errors: vec![format!("dry-run: would reset {count} failed units: {}", failed.join(", "))],
+                errors: vec![format!(
+                    "dry-run: would reset {count} failed units: {}",
+                    failed.join(", ")
+                )],
             });
         }
         exec::run_stdout(&["sudo", "systemctl", "reset-failed"])?;
@@ -76,9 +89,15 @@ impl Variant for ResetFailed {
 
 struct RestartFailed;
 impl Variant for RestartFailed {
-    fn name(&self) -> &'static str { "restart-failed" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Confirm }
+    fn name(&self) -> &'static str {
+        "restart-failed"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Confirm
+    }
     fn inspect(&self) -> Result<Inspection> {
         let failed = list_failed_units();
         let count = failed.len() as u64;

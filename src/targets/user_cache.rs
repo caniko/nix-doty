@@ -1,14 +1,24 @@
-use anyhow::Result;
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
+use anyhow::Result;
 
 struct UserCacheFramework;
 
 impl Framework for UserCacheFramework {
-    fn name(&self) -> &'static str { "user-cache" }
-    fn summary(&self) -> &'static str { "User-level build caches — removes stale entries older than 30 days across all users" }
+    fn name(&self) -> &'static str {
+        "user-cache"
+    }
+    fn summary(&self) -> &'static str {
+        "User-level build caches — removes stale entries older than 30 days across all users"
+    }
     fn variants(&self) -> &[&'static dyn Variant] {
-        &[&PurgeGoBuild, &PurgeCabal, &PurgeGrype, &PurgeComgr, &PurgeAppimage]
+        &[
+            &PurgeGoBuild,
+            &PurgeCabal,
+            &PurgeGrype,
+            &PurgeComgr,
+            &PurgeAppimage,
+        ]
     }
 }
 
@@ -18,32 +28,46 @@ pub static USER_CACHE: &dyn Framework = &FRAMEWORK;
 
 fn stale_cache_inspect(subpath: &str, desc: &str) -> Result<Inspection> {
     let dirs = exec::all_user_subdirs(subpath);
-    let total_bytes: u64 = dirs.iter()
-        .filter_map(|d| exec::total_dir_size(d).ok())
-        .sum();
-    let path = if dirs.is_empty() { format!("/home/<users>/{subpath}") } else { dirs.join(", ") };
+    let scan = exec::total_paths_size_bounded(&dirs, 20_000);
+    let path = if dirs.is_empty() {
+        format!("/home/<users>/{subpath}")
+    } else {
+        dirs.join(", ")
+    };
     Ok(Inspection {
         framework: "user-cache",
         variant: "",
         path,
-        size_bytes: Some(total_bytes),
+        size_bytes: Some(scan.bytes),
         age_oldest_days: None,
         would_remove: dirs.len() as u64,
-        notes: format!("{desc} — {count} user dirs with stale entries >30d", count = dirs.len()),
+        notes: format!(
+            "{desc} — {count} user dirs with stale entries >30d{suffix}",
+            count = dirs.len(),
+            suffix = if scan.truncated {
+                " (scan truncated)"
+            } else {
+                ""
+            }
+        ),
     })
 }
 
 fn stale_cache_apply(subpath: &str, dry_run: bool) -> Result<ApplyReport> {
     let dirs = exec::all_user_subdirs(subpath);
-    let before: u64 = dirs.iter()
-        .filter_map(|d| exec::total_dir_size(d).ok())
-        .sum();
+    let before = exec::total_paths_size_bounded(&dirs, 20_000).bytes;
     if dry_run {
         return Ok(ApplyReport {
-            framework: "", variant: "",
-            removed: 0, freed_bytes: 0,
+            framework: "",
+            variant: "",
+            removed: 0,
+            freed_bytes: 0,
             skipped: dirs.len() as u64,
-            errors: vec![format!("dry-run: would prune stale entries >30d from {count} dirs ({})", fmt_bytes(before), count = dirs.len())],
+            errors: vec![format!(
+                "dry-run: would prune stale entries >30d from {count} dirs ({})",
+                fmt_bytes(before),
+                count = dirs.len()
+            )],
         });
     }
     let mut total_removed = 0u64;
@@ -59,7 +83,8 @@ fn stale_cache_apply(subpath: &str, dry_run: bool) -> Result<ApplyReport> {
         }
     }
     Ok(ApplyReport {
-        framework: "", variant: "",
+        framework: "",
+        variant: "",
         removed: total_removed,
         freed_bytes: total_freed,
         skipped: 0,
@@ -69,11 +94,20 @@ fn stale_cache_apply(subpath: &str, dry_run: bool) -> Result<ApplyReport> {
 
 struct PurgeGoBuild;
 impl Variant for PurgeGoBuild {
-    fn name(&self) -> &'static str { "purge-go-build" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Safe }
+    fn name(&self) -> &'static str {
+        "purge-go-build"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
     fn inspect(&self) -> Result<Inspection> {
-        stale_cache_inspect(".cache/go-build", "Go build cache — stale entries >30d removed")
+        stale_cache_inspect(
+            ".cache/go-build",
+            "Go build cache — stale entries >30d removed",
+        )
     }
     fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
         let mut r = stale_cache_apply(".cache/go-build", dry_run)?;
@@ -85,11 +119,20 @@ impl Variant for PurgeGoBuild {
 
 struct PurgeCabal;
 impl Variant for PurgeCabal {
-    fn name(&self) -> &'static str { "purge-cabal" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Safe }
+    fn name(&self) -> &'static str {
+        "purge-cabal"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
     fn inspect(&self) -> Result<Inspection> {
-        stale_cache_inspect(".cache/cabal", "Cabal Haskell build cache — stale entries >30d removed")
+        stale_cache_inspect(
+            ".cache/cabal",
+            "Cabal Haskell build cache — stale entries >30d removed",
+        )
     }
     fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
         let mut r = stale_cache_apply(".cache/cabal", dry_run)?;
@@ -101,11 +144,20 @@ impl Variant for PurgeCabal {
 
 struct PurgeGrype;
 impl Variant for PurgeGrype {
-    fn name(&self) -> &'static str { "purge-grype" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Safe }
+    fn name(&self) -> &'static str {
+        "purge-grype"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
     fn inspect(&self) -> Result<Inspection> {
-        stale_cache_inspect(".cache/grype", "Grype vulnerability database cache — stale entries >30d removed")
+        stale_cache_inspect(
+            ".cache/grype",
+            "Grype vulnerability database cache — stale entries >30d removed",
+        )
     }
     fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
         let mut r = stale_cache_apply(".cache/grype", dry_run)?;
@@ -117,11 +169,20 @@ impl Variant for PurgeGrype {
 
 struct PurgeComgr;
 impl Variant for PurgeComgr {
-    fn name(&self) -> &'static str { "purge-comgr" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Safe }
+    fn name(&self) -> &'static str {
+        "purge-comgr"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
     fn inspect(&self) -> Result<Inspection> {
-        stale_cache_inspect(".cache/comgr", "AMD ROCm compiler cache — stale entries >30d removed")
+        stale_cache_inspect(
+            ".cache/comgr",
+            "AMD ROCm compiler cache — stale entries >30d removed",
+        )
     }
     fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
         let mut r = stale_cache_apply(".cache/comgr", dry_run)?;
@@ -133,11 +194,20 @@ impl Variant for PurgeComgr {
 
 struct PurgeAppimage;
 impl Variant for PurgeAppimage {
-    fn name(&self) -> &'static str { "purge-appimage" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Safe }
+    fn name(&self) -> &'static str {
+        "purge-appimage"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
     fn inspect(&self) -> Result<Inspection> {
-        stale_cache_inspect(".cache/appimage-run", "AppImage runner cache — stale entries >30d removed")
+        stale_cache_inspect(
+            ".cache/appimage-run",
+            "AppImage runner cache — stale entries >30d removed",
+        )
     }
     fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
         let mut r = stale_cache_apply(".cache/appimage-run", dry_run)?;

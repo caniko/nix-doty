@@ -1,12 +1,16 @@
-use anyhow::Result;
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
+use anyhow::Result;
 
 struct QbittorrentTorrentsFramework;
 
 impl Framework for QbittorrentTorrentsFramework {
-    fn name(&self) -> &'static str { "qbittorrent-torrents" }
-    fn summary(&self) -> &'static str { "qBittorrent stale torrents (report only)" }
+    fn name(&self) -> &'static str {
+        "qbittorrent-torrents"
+    }
+    fn summary(&self) -> &'static str {
+        "qBittorrent stale torrents (report only)"
+    }
     fn variants(&self) -> &[&'static dyn Variant] {
         &[&StaleReport]
     }
@@ -17,42 +21,60 @@ static FRAMEWORK: QbittorrentTorrentsFramework = QbittorrentTorrentsFramework;
 pub static QBITTORRENT_TORRENTS: &dyn Framework = &FRAMEWORK;
 
 fn data_dirs() -> Vec<String> {
-    let paths = ["/data/nvme0/downloads/tv-shows", "/data/nvme0/downloads/movies"];
-    paths.iter()
+    let paths = [
+        "/data/nvme0/downloads/tv-shows",
+        "/data/nvme0/downloads/movies",
+    ];
+    paths
+        .iter()
         .filter(|p| exec::path_exists(p))
         .flat_map(|p| {
             let entries = exec::read_dir(p).unwrap_or_default();
-            entries.into_iter().map(move |e| format!("{p}/{e}"))
+            entries.into_iter()
         })
         .collect()
 }
 
 struct StaleReport;
 impl Variant for StaleReport {
-    fn name(&self) -> &'static str { "stale-report" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::ReportOnly }
+    fn name(&self) -> &'static str {
+        "stale-report"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::ReportOnly
+    }
     fn inspect(&self) -> Result<Inspection> {
         let dirs = data_dirs();
         let count = dirs.len() as u64;
-        let total_size: u64 = dirs.iter()
-            .filter_map(|d| exec::file_size(d).ok())
-            .sum();
+        let scan = exec::total_paths_size_bounded(&dirs, 20_000);
         Ok(Inspection {
             framework: self.framework().name(),
             variant: self.name(),
             path: "/data/nvme0/downloads".into(),
-            size_bytes: Some(total_size),
+            size_bytes: Some(scan.bytes),
             age_oldest_days: None,
             would_remove: 0,
-            notes: format!("{count} download directories — report only"),
+            notes: format!(
+                "{count} download directories — report only{}",
+                if scan.truncated {
+                    " (scan truncated)"
+                } else {
+                    ""
+                }
+            ),
         })
     }
     fn apply(&self, _dry_run: bool, _force: bool) -> Result<ApplyReport> {
         Ok(ApplyReport {
             framework: self.framework().name(),
             variant: self.name(),
-            removed: 0, freed_bytes: 0, skipped: 0, errors: vec![],
+            removed: 0,
+            freed_bytes: 0,
+            skipped: 0,
+            errors: vec![],
         })
     }
 }

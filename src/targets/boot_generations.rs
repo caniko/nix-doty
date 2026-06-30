@@ -1,12 +1,16 @@
-use anyhow::Result;
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
+use anyhow::Result;
 
 struct BootGenerationsFramework;
 
 impl Framework for BootGenerationsFramework {
-    fn name(&self) -> &'static str { "boot-generations" }
-    fn summary(&self) -> &'static str { "Old bootloader entries and NixOS generations" }
+    fn name(&self) -> &'static str {
+        "boot-generations"
+    }
+    fn summary(&self) -> &'static str {
+        "Old bootloader entries and NixOS generations"
+    }
     fn variants(&self) -> &[&'static dyn Variant] {
         &[&NhLimit]
     }
@@ -18,18 +22,21 @@ pub static BOOT_GENERATIONS: &dyn Framework = &FRAMEWORK;
 
 struct NhLimit;
 impl Variant for NhLimit {
-    fn name(&self) -> &'static str { "nh-limit" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Safe }
+    fn name(&self) -> &'static str {
+        "nh-limit"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
     fn inspect(&self) -> Result<Inspection> {
-        let boot_entries = exec::read_dir("/boot/loader/entries").ok()
-            .map(|files| {
-                let count = files.len() as u64;
-                let total_size: u64 = files.iter()
-                    .filter_map(|f| exec::file_size(f).ok())
-                    .sum();
-                (count, total_size)
-            });
+        let boot_entries = exec::read_dir("/boot/loader/entries").ok().map(|files| {
+            let count = files.len() as u64;
+            let total_size: u64 = files.iter().filter_map(|f| exec::file_size(f).ok()).sum();
+            (count, total_size)
+        });
         let (entries, size) = boot_entries.unwrap_or((0, 0));
         Ok(Inspection {
             framework: self.framework().name(),
@@ -50,7 +57,9 @@ impl Variant for NhLimit {
                 removed: 0,
                 freed_bytes: 0,
                 skipped: entries.saturating_sub(10),
-                errors: vec!["dry-run: would run nh clean --keep-since 14d to prune boot entries".into()],
+                errors: vec![
+                    "dry-run: would run nh clean --keep-since 14d to prune boot entries".into(),
+                ],
             });
         }
         exec::run_stdout(&["nh", "clean", "--keep-since", "14d"])?;

@@ -1,12 +1,16 @@
-use anyhow::Result;
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
+use anyhow::Result;
 
 struct ChessbenderStateFramework;
 
 impl Framework for ChessbenderStateFramework {
-    fn name(&self) -> &'static str { "chessbender-state" }
-    fn summary(&self) -> &'static str { "Chessbender cluster VM disk images and cluster state" }
+    fn name(&self) -> &'static str {
+        "chessbender-state"
+    }
+    fn summary(&self) -> &'static str {
+        "Chessbender cluster VM disk images and cluster state"
+    }
     fn variants(&self) -> &[&'static dyn Variant] {
         &[&PurgeBackups, &PurgeClusterVms]
     }
@@ -43,9 +47,7 @@ fn backup_images(vm_path: &str) -> Vec<(String, u64)> {
         Err(_) => return vec![],
     };
     dir.filter_map(|e| e.ok())
-        .filter(|e| {
-            e.file_name().to_string_lossy().contains("backup")
-        })
+        .filter(|e| e.file_name().to_string_lossy().contains("backup"))
         .map(|e| {
             let path = e.path().to_string_lossy().to_string();
             let size = e.metadata().map(|m| m.len()).unwrap_or(0);
@@ -56,19 +58,31 @@ fn backup_images(vm_path: &str) -> Vec<(String, u64)> {
 
 struct PurgeBackups;
 impl Variant for PurgeBackups {
-    fn name(&self) -> &'static str { "purge-backups" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Safe }
+    fn name(&self) -> &'static str {
+        "purge-backups"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
     fn inspect(&self) -> Result<Inspection> {
         let (count, bytes) = count_backups();
         Ok(Inspection {
             framework: self.framework().name(),
             variant: self.name(),
-            path: cluster_dirs().first().cloned().unwrap_or_else(|| "/home/<user>/.local/state/chessbender-cluster".into()),
+            path: cluster_dirs()
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "/home/<user>/.local/state/chessbender-cluster".into()),
             size_bytes: Some(bytes),
             age_oldest_days: None,
             would_remove: count,
-            notes: format!("backup disk images across all cluster VMs: {count} files, {}", fmt_bytes(bytes)),
+            notes: format!(
+                "backup disk images across all cluster VMs: {count} files, {}",
+                fmt_bytes(bytes)
+            ),
         })
     }
     fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
@@ -80,7 +94,10 @@ impl Variant for PurgeBackups {
                 removed: 0,
                 freed_bytes: 0,
                 skipped: count,
-                errors: vec![format!("dry-run: would delete {count} backup images ({})", fmt_bytes(bytes))],
+                errors: vec![format!(
+                    "dry-run: would delete {count} backup images ({})",
+                    fmt_bytes(bytes)
+                )],
             });
         }
         let mut removed = 0u64;
@@ -109,19 +126,31 @@ impl Variant for PurgeBackups {
 
 struct PurgeClusterVms;
 impl Variant for PurgeClusterVms {
-    fn name(&self) -> &'static str { "purge-cluster-vms" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::Confirm }
+    fn name(&self) -> &'static str {
+        "purge-cluster-vms"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Confirm
+    }
     fn inspect(&self) -> Result<Inspection> {
         let (count, bytes) = count_all_vms();
         Ok(Inspection {
             framework: self.framework().name(),
             variant: self.name(),
-            path: cluster_dirs().first().cloned().unwrap_or_else(|| "/home/<user>/.local/state/chessbender-cluster".into()),
+            path: cluster_dirs()
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "/home/<user>/.local/state/chessbender-cluster".into()),
             size_bytes: Some(bytes),
             age_oldest_days: None,
             would_remove: count,
-            notes: format!("all cluster VM directories: {count} dirs, {}", fmt_bytes(bytes)),
+            notes: format!(
+                "all cluster VM directories: {count} dirs, {}",
+                fmt_bytes(bytes)
+            ),
         })
     }
     fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
@@ -133,7 +162,10 @@ impl Variant for PurgeClusterVms {
                 removed: 0,
                 freed_bytes: 0,
                 skipped: count,
-                errors: vec![format!("dry-run: would delete {count} VM directories ({})", fmt_bytes(bytes))],
+                errors: vec![format!(
+                    "dry-run: would delete {count} VM directories ({})",
+                    fmt_bytes(bytes)
+                )],
             });
         }
         let mut removed = 0u64;
@@ -175,7 +207,8 @@ fn count_backups() -> (u64, u64) {
 fn count_all_vms() -> (u64, u64) {
     let vms = vm_dirs();
     let count = vms.len() as u64;
-    let bytes: u64 = vms.iter()
+    let bytes: u64 = vms
+        .iter()
         .filter_map(|v| exec::total_dir_size(v).ok())
         .sum();
     (count, bytes)

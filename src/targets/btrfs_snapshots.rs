@@ -1,12 +1,16 @@
-use anyhow::Result;
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
+use anyhow::Result;
 
 struct BtrfsSnapshotsFramework;
 
 impl Framework for BtrfsSnapshotsFramework {
-    fn name(&self) -> &'static str { "btrfs-snapshots" }
-    fn summary(&self) -> &'static str { "Btrfs snapshot subvolumes (report only — no manager)" }
+    fn name(&self) -> &'static str {
+        "btrfs-snapshots"
+    }
+    fn summary(&self) -> &'static str {
+        "Btrfs snapshot subvolumes (report only — no manager)"
+    }
     fn variants(&self) -> &[&'static dyn Variant] {
         &[&OrphansReport]
     }
@@ -20,11 +24,18 @@ const SNAPSHOTS_DIR: &str = "/.snapshots";
 
 struct OrphansReport;
 impl Variant for OrphansReport {
-    fn name(&self) -> &'static str { "orphans-report" }
-    fn framework(&self) -> &'static dyn Framework { &FRAMEWORK }
-    fn tier(&self) -> Tier { Tier::ReportOnly }
+    fn name(&self) -> &'static str {
+        "orphans-report"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::ReportOnly
+    }
     fn inspect(&self) -> Result<Inspection> {
-        let subvols = exec::run_stdout(&["btrfs", "subvolume", "list", "-o", SNAPSHOTS_DIR]).unwrap_or_default();
+        let subvols = exec::run_stdout(&["btrfs", "subvolume", "list", "-o", SNAPSHOTS_DIR])
+            .unwrap_or_default();
         let count = subvols.lines().count() as u64;
         Ok(Inspection {
             framework: self.framework().name(),
@@ -44,7 +55,10 @@ impl Variant for OrphansReport {
         Ok(ApplyReport {
             framework: self.framework().name(),
             variant: self.name(),
-            removed: 0, freed_bytes: 0, skipped: 0, errors: vec![],
+            removed: 0,
+            freed_bytes: 0,
+            skipped: 0,
+            errors: vec![],
         })
     }
 }
