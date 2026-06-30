@@ -29,6 +29,9 @@ pub enum Command {
         /// Variant name
         #[arg(short, long, value_name = "VARIANT")]
         variant: Option<String>,
+        /// Path to configured targets.json
+        #[arg(long, default_value = crate::config::DEFAULT_CONFIG_PATH)]
+        config: String,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -41,6 +44,9 @@ pub enum Command {
         /// Variant name
         #[arg(short, long, value_name = "VARIANT")]
         variant: Option<String>,
+        /// Path to configured targets.json
+        #[arg(long, default_value = crate::config::DEFAULT_CONFIG_PATH)]
+        config: String,
         /// Actually perform cleanup (default is dry-run)
         #[arg(long)]
         apply: bool,
@@ -93,12 +99,40 @@ impl Cli {
     pub fn run(self) -> Result<()> {
         match self.command {
             Command::List { json } => crate::commands::list(json),
-            Command::Status { target, variant, json } => crate::commands::status(target, variant, json),
-            Command::Run { target, variant, apply, force, json } => crate::commands::run(target, variant, apply, force, json),
+            Command::Status {
+                target,
+                variant,
+                config,
+                json,
+            } => crate::commands::status(target, variant, &config, json),
+            Command::Run {
+                target,
+                variant,
+                config,
+                apply,
+                force,
+                json,
+            } => crate::commands::run(target, variant, &config, apply, force, json),
             Command::Doctor { config, json } => crate::commands::doctor(&config, json),
-            Command::Reclaim { mount, threshold, min_free_bytes, min_free_pct, apply, force, all, json } => {
-                crate::commands::reclaim(mount, threshold, min_free_bytes, min_free_pct, apply, force, all, json)
-            },
+            Command::Reclaim {
+                mount,
+                threshold,
+                min_free_bytes,
+                min_free_pct,
+                apply,
+                force,
+                all,
+                json,
+            } => crate::commands::reclaim(
+                mount,
+                threshold,
+                min_free_bytes,
+                min_free_pct,
+                apply,
+                force,
+                all,
+                json,
+            ),
         }
     }
 }

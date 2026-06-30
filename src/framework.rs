@@ -1,5 +1,6 @@
 use anyhow::Result;
 use serde::Serialize;
+use serde_json::Value;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -43,6 +44,17 @@ pub trait Variant: Sync {
     fn tier(&self) -> Tier;
     fn inspect(&self) -> Result<Inspection>;
     fn apply(&self, dry_run: bool, force: bool) -> Result<ApplyReport>;
+    fn inspect_with_settings(&self, _settings: &Value) -> Result<Inspection> {
+        self.inspect()
+    }
+    fn apply_with_settings(
+        &self,
+        dry_run: bool,
+        force: bool,
+        _settings: &Value,
+    ) -> Result<ApplyReport> {
+        self.apply(dry_run, force)
+    }
 }
 
 pub struct ApplyCtx {

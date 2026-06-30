@@ -1,5 +1,6 @@
 mod cli;
 mod commands;
+mod config;
 mod exec;
 pub mod framework;
 pub mod mount;
