@@ -1,6 +1,7 @@
 mod boot_generations;
 mod btrfs_snapshots;
 mod build_memory_logs;
+mod canix_rebuild_logs;
 mod cgroup_reset;
 mod chessbender_state;
 mod comfyui_state;
@@ -28,6 +29,7 @@ mod uv_cache;
 pub use boot_generations::BOOT_GENERATIONS;
 pub use btrfs_snapshots::BTRFS_SNAPSHOTS;
 pub use build_memory_logs::BUILD_MEMORY_LOGS;
+pub use canix_rebuild_logs::CANIX_REBUILD_LOGS;
 pub use cgroup_reset::CGROUP_RESET;
 pub use chessbender_state::CHESSBENDER_STATE;
 pub use comfyui_state::COMFYUI_STATE;

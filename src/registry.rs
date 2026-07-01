@@ -4,6 +4,7 @@ pub static ALL_FRAMEWORKS: &[&dyn Framework] = &[
     crate::targets::NIX_STORE_GC,
     crate::targets::BOOT_GENERATIONS,
     crate::targets::BUILD_MEMORY_LOGS,
+    crate::targets::CANIX_REBUILD_LOGS,
     crate::targets::JOURNALD_VACUUM,
     crate::targets::FAILED_UNITS,
     crate::targets::CGROUP_RESET,
