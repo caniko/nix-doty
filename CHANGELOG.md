@@ -13,6 +13,9 @@
 - `LlamaPolicy` for configurable pinned files in llama-models target
 - `mainProgram` metadata in flake.nix
 - Multi-variant support in the NixOS module with assertions
+- `ReclaimReport`, `ReclaimFilesystem`, `ReclaimTarget`, `HealthEntry`, `ReclaimTotals`, `TargetScope` types for structured per-filesystem reclaim output
+- Support for `Tier::Confirm` in the `run` command — confirm-tier targets are skipped unless `--force` is passed
+- `podman-images` target framework with `disk-report` (report-only) and `prune-inactive-older` (confirm tier) variants
 
 ### Changed
 
@@ -21,6 +24,11 @@
 - nix-store-gc variants avoid full /nix/store scan for freed bytes measurement
 - NixOS module target entries use flatten + mapAttrsToList for multi-variant generation
 - Alphabetized module declarations and re-exports in targets/mod.rs
+- `dry_run` parameter renamed to `apply` across all `Variant::apply` methods; logic inverted from `if dry_run` to `if !apply`
+- Mount info now resolved via `findmnt --json` for accurate device, fstype, maj_min, and fsroot fields
+- Reclaim module rewritten from flat plan list to a structured `ReclaimReport` with per-filesystem target assignment and health entries
+- `nh clean` command updated from `--keep-since 14d` to `all -K 14d` syntax
+- Reclaim output adapted to new `ReclaimReport` data model (`format_report_human`, `report.filesystems`)
 
 ### Fixed
 
