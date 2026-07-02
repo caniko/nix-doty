@@ -97,9 +97,9 @@ impl Variant for TrashEmpty {
             ),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
         let dirs = trash_dirs();
-        if dry_run {
+        if !apply {
             let (files, bytes) = dirs
                 .iter()
                 .map(|d| inspect_trash_dir(d))

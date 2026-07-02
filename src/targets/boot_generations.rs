@@ -48,8 +48,8 @@ impl Variant for NhLimit {
             notes: format!("{entries} boot entries (would keep ~10)"),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             let entries = exec::dir_entry_count("/boot/loader/entries").unwrap_or(0);
             return Ok(ApplyReport {
                 framework: self.framework().name(),

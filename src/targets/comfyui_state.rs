@@ -60,7 +60,7 @@ impl Variant for ComfyuiTempPrune {
             ),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
         let dirs = [
             format!("{COMFYUI_STATE_DIR}/temp"),
             format!("{COMFYUI_STATE_DIR}/cache"),
@@ -69,7 +69,7 @@ impl Variant for ComfyuiTempPrune {
         let mut removed = 0u64;
         for d in &dirs {
             if exec::path_exists(d) {
-                if dry_run {
+                if !apply {
                     freed += exec::total_dir_size(d).unwrap_or(0);
                     removed += 1;
                 } else {
@@ -79,7 +79,7 @@ impl Variant for ComfyuiTempPrune {
                 }
             }
         }
-        if dry_run {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),

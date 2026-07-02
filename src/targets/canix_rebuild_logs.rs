@@ -94,20 +94,20 @@ impl Variant for PurgeOlder {
         })
     }
 
-    fn apply(&self, dry_run: bool, force: bool) -> Result<ApplyReport> {
-        self.apply_with_settings(dry_run, force, &Value::Null)
+    fn apply(&self, apply: bool, force: bool) -> Result<ApplyReport> {
+        self.apply_with_settings(apply, force, &Value::Null)
     }
 
     fn apply_with_settings(
         &self,
-        dry_run: bool,
+        apply: bool,
         _force: bool,
         settings: &Value,
     ) -> Result<ApplyReport> {
         let settings = Settings::from_value(settings)?;
         let stale = stale_log_files(&settings.path, settings.max_age_days)?;
         let freed_bytes = stale.iter().filter_map(|f| file_size(f)).sum();
-        if dry_run {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),
@@ -271,7 +271,7 @@ mod tests {
 
         let report = PurgeOlder
             .apply_with_settings(
-                false,
+                true,
                 false,
                 &serde_json::json!({
                     "path": dir.path().join("logs").display().to_string(),

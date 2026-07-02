@@ -58,9 +58,9 @@ impl Variant for DnsCacheClear {
             },
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
         let dir = format!("{}/canix-dns", runtime_dir());
-        if dry_run {
+        if !apply {
             let count = exec::dir_entry_count(&dir).unwrap_or(0);
             return Ok(ApplyReport {
                 framework: self.framework().name(),

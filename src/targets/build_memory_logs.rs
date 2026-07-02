@@ -59,8 +59,8 @@ impl Variant for RotateByMonth {
             ),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),
@@ -121,8 +121,8 @@ impl Variant for PurgeOlder {
             notes: "purges files modified >90 days ago".into(),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),

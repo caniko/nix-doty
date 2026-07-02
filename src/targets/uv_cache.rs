@@ -49,8 +49,8 @@ impl Variant for UvCacheClean {
             notes: "runs uv cache clean".into(),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             let size = exec::total_dir_size(UV_CACHE_DIR).unwrap_or(0);
             return Ok(ApplyReport {
                 framework: self.framework().name(),
@@ -101,8 +101,8 @@ impl Variant for UvCachePruneOlder {
             notes: format!("{count} cache entries — removes files untouched >30 days"),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),

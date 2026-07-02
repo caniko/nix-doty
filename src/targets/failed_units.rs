@@ -59,10 +59,10 @@ impl Variant for ResetFailed {
             },
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
         let failed = list_failed_units();
         let count = failed.len() as u64;
-        if dry_run {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),
@@ -115,10 +115,10 @@ impl Variant for RestartFailed {
             },
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
         let failed = list_failed_units();
         let count = failed.len() as u64;
-        if dry_run {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),

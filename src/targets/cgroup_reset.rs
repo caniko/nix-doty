@@ -63,8 +63,8 @@ impl Variant for StuckScopes {
             ),
         })
     }
-    fn apply(&self, dry_run: bool, force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, force: bool) -> Result<ApplyReport> {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),

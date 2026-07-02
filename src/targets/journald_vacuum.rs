@@ -49,8 +49,8 @@ impl Variant for SizeCap {
             notes: format!("journal disk usage: {usage}"),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),
@@ -95,8 +95,8 @@ impl Variant for TimeCap {
             notes: "would keep last 14 days of journal".into(),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),

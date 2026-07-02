@@ -53,10 +53,10 @@ fn stale_cache_inspect(subpath: &str, desc: &str) -> Result<Inspection> {
     })
 }
 
-fn stale_cache_apply(subpath: &str, dry_run: bool) -> Result<ApplyReport> {
+fn stale_cache_apply(subpath: &str, apply: bool) -> Result<ApplyReport> {
     let dirs = exec::all_user_subdirs(subpath);
     let before = exec::total_paths_size_bounded(&dirs, 20_000).bytes;
-    if dry_run {
+    if !apply {
         return Ok(ApplyReport {
             framework: "",
             variant: "",
@@ -109,8 +109,8 @@ impl Variant for PurgeGoBuild {
             "Go build cache — stale entries >30d removed",
         )
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        let mut r = stale_cache_apply(".cache/go-build", dry_run)?;
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        let mut r = stale_cache_apply(".cache/go-build", apply)?;
         r.framework = self.framework().name();
         r.variant = self.name();
         Ok(r)
@@ -134,8 +134,8 @@ impl Variant for PurgeCabal {
             "Cabal Haskell build cache — stale entries >30d removed",
         )
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        let mut r = stale_cache_apply(".cache/cabal", dry_run)?;
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        let mut r = stale_cache_apply(".cache/cabal", apply)?;
         r.framework = self.framework().name();
         r.variant = self.name();
         Ok(r)
@@ -159,8 +159,8 @@ impl Variant for PurgeGrype {
             "Grype vulnerability database cache — stale entries >30d removed",
         )
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        let mut r = stale_cache_apply(".cache/grype", dry_run)?;
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        let mut r = stale_cache_apply(".cache/grype", apply)?;
         r.framework = self.framework().name();
         r.variant = self.name();
         Ok(r)
@@ -184,8 +184,8 @@ impl Variant for PurgeComgr {
             "AMD ROCm compiler cache — stale entries >30d removed",
         )
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        let mut r = stale_cache_apply(".cache/comgr", dry_run)?;
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        let mut r = stale_cache_apply(".cache/comgr", apply)?;
         r.framework = self.framework().name();
         r.variant = self.name();
         Ok(r)
@@ -209,8 +209,8 @@ impl Variant for PurgeAppimage {
             "AppImage runner cache — stale entries >30d removed",
         )
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        let mut r = stale_cache_apply(".cache/appimage-run", dry_run)?;
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        let mut r = stale_cache_apply(".cache/appimage-run", apply)?;
         r.framework = self.framework().name();
         r.variant = self.name();
         Ok(r)

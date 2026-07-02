@@ -59,14 +59,14 @@ impl Variant for ImmichTempClear {
             ),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
         let dirs = ["cache", "tmp", "upload"];
         let mut removed = 0u64;
         let mut freed = 0u64;
         for sub in &dirs {
             let path = format!("{IMMICH_STATE_DIR}/{sub}");
             if exec::path_exists(&path) {
-                if dry_run {
+                if !apply {
                     freed += exec::total_dir_size(&path).unwrap_or(0);
                     removed += 1;
                 } else {
@@ -86,7 +86,7 @@ impl Variant for ImmichTempClear {
                 }
             }
         }
-        if dry_run {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),

@@ -85,8 +85,8 @@ impl Variant for PurgeBackups {
             ),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             let (count, bytes) = count_backups();
             return Ok(ApplyReport {
                 framework: self.framework().name(),
@@ -153,8 +153,8 @@ impl Variant for PurgeClusterVms {
             ),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             let (count, bytes) = count_all_vms();
             return Ok(ApplyReport {
                 framework: self.framework().name(),

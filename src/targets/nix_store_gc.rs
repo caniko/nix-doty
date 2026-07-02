@@ -37,7 +37,7 @@ impl Variant for NhClean {
             .map(|s| s.lines().count() as u64)
             .unwrap_or(0);
         let notes = if exec::path_exists("/run/current-system") {
-            "nh clean --keep-since 14d would prune old generations".into()
+            "nh clean all -K 14d would prune old generations".into()
         } else {
             "no active NixOS system found".into()
         };
@@ -51,8 +51,8 @@ impl Variant for NhClean {
             notes,
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             let entries = exec::run_stdout(&["ls", "-1", "/nix/store"])
                 .ok()
                 .map(|s| s.lines().count() as u64)
@@ -63,10 +63,10 @@ impl Variant for NhClean {
                 removed: 0,
                 freed_bytes: 0,
                 skipped: entries,
-                errors: vec!["dry-run: would run nh clean --keep-since 14d".into()],
+                errors: vec!["dry-run: would run nh clean all -K 14d".into()],
             });
         }
-        exec::run_stdout(&["nh", "clean", "--keep-since", "14d"])?;
+        exec::run_stdout(&["nh", "clean", "all", "-K", "14d"])?;
         Ok(ApplyReport {
             framework: self.framework().name(),
             variant: self.name(),
@@ -100,8 +100,8 @@ impl Variant for NixCollectGarbage {
             notes: "runs sudo nix-collect-garbage -d to delete old generations".into(),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),
@@ -145,8 +145,8 @@ impl Variant for Optimise {
             notes: "hardlinks identical store paths — reduces disk usage".into(),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),

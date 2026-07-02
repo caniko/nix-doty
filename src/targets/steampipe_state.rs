@@ -52,8 +52,8 @@ impl Variant for PurgeStaleVms {
             notes,
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             let (entries, bytes, _) = find_stale_vms()?;
             return Ok(ApplyReport {
                 framework: self.framework().name(),
@@ -131,8 +131,8 @@ impl Variant for PurgeAllVms {
             notes,
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
-        if dry_run {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        if !apply {
             let (entries, bytes, _) = calc_all_vm_sizes()?;
             return Ok(ApplyReport {
                 framework: self.framework().name(),

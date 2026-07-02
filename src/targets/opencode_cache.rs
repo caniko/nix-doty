@@ -81,9 +81,9 @@ impl Variant for PurgeToolOutput {
             ),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
         let dirs = opencode_dirs();
-        if dry_run {
+        if !apply {
             let (count, bytes) = dirs
                 .iter()
                 .map(|d| sum_subdir_bytes(d, "tool-output"))
@@ -158,9 +158,9 @@ impl Variant for PurgeSnapshots {
             ),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
         let dirs = opencode_dirs();
-        if dry_run {
+        if !apply {
             let (count, bytes) = dirs
                 .iter()
                 .map(|d| {
@@ -245,9 +245,9 @@ impl Variant for PurgeLogs {
             ),
         })
     }
-    fn apply(&self, dry_run: bool, _force: bool) -> Result<ApplyReport> {
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
         let dirs = opencode_dirs();
-        if dry_run {
+        if !apply {
             let bytes: u64 = dirs
                 .iter()
                 .map(|d| exec::total_dir_size(&format!("{d}/log")).unwrap_or(0))
