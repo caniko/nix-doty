@@ -27,6 +27,7 @@ pub static ALL_FRAMEWORKS: &[&dyn Framework] = &[
     crate::targets::FOUNDRY_VTT_STATE,
     crate::targets::OPENVSCODE_STATE,
     crate::targets::PG_BACKUP_STATE,
+    crate::targets::PODMAN_IMAGES,
 ];
 
 pub fn find_framework(name: &str) -> Option<&'static dyn Framework> {
