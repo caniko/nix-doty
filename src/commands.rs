@@ -187,7 +187,7 @@ pub fn run(
             match tier {
                 Tier::Risky if apply => {
                     eprintln!(
-                        "Skipping {}/{}: risky — use --force to bypass",
+                        "Skipping {}/{}: risky \u{2014} use --force to bypass",
                         v.framework().name(),
                         v.name()
                     );
@@ -198,6 +198,22 @@ pub fn run(
                         freed_bytes: 0,
                         skipped: 1,
                         errors: vec!["skipped: risky, requires --force".into()],
+                    });
+                    continue;
+                }
+                Tier::Confirm if apply => {
+                    eprintln!(
+                        "Skipping {}/{}: confirm tier \u{2014} use --force to bypass",
+                        v.framework().name(),
+                        v.name()
+                    );
+                    reports.push(ApplyReport {
+                        framework: v.framework().name(),
+                        variant: v.name(),
+                        removed: 0,
+                        freed_bytes: 0,
+                        skipped: 1,
+                        errors: vec!["skipped: confirm, requires --force".into()],
                     });
                     continue;
                 }
@@ -401,26 +417,24 @@ pub fn reclaim(
         all,
     };
 
-    let mut plans = crate::reclaim::plan(&config)?;
+    let mut report = crate::reclaim::plan(&config)?;
 
-    if plans.is_empty() {
+    if report.filesystems.is_empty() {
         println!(
-            "No mounts exceed the threshold ({}%). Nothing to reclaim.",
+            "No filesystems exceed the threshold ({}%). Nothing to reclaim.",
             threshold
         );
         return Ok(());
     }
 
     if apply {
-        for plan in &mut plans {
-            crate::reclaim::execute(plan, &config)?;
-        }
+        crate::reclaim::execute(&mut report, &config)?;
     }
 
     if json {
-        println!("{}", serde_json::to_string_pretty(&plans)?);
+        println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
-        print!("{}", crate::reclaim::format_plan_human(&plans));
+        print!("{}", crate::reclaim::format_report_human(&report));
     }
 
     Ok(())
