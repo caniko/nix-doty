@@ -186,51 +186,15 @@ pub fn run(
         if !force {
             match tier {
                 Tier::Risky if apply => {
-                    eprintln!(
-                        "Skipping {}/{}: risky \u{2014} use --force to bypass",
-                        v.framework().name(),
-                        v.name()
-                    );
-                    reports.push(ApplyReport {
-                        framework: v.framework().name(),
-                        variant: v.name(),
-                        removed: 0,
-                        freed_bytes: 0,
-                        skipped: 1,
-                        errors: vec!["skipped: risky, requires --force".into()],
-                    });
+                    reports.push(skipped_report(v, "skipped: risky, requires --force"));
                     continue;
                 }
                 Tier::Confirm if apply => {
-                    eprintln!(
-                        "Skipping {}/{}: confirm tier \u{2014} use --force to bypass",
-                        v.framework().name(),
-                        v.name()
-                    );
-                    reports.push(ApplyReport {
-                        framework: v.framework().name(),
-                        variant: v.name(),
-                        removed: 0,
-                        freed_bytes: 0,
-                        skipped: 1,
-                        errors: vec!["skipped: confirm, requires --force".into()],
-                    });
+                    reports.push(skipped_report(v, "skipped: confirm, requires --force"));
                     continue;
                 }
                 Tier::ReportOnly if apply => {
-                    eprintln!(
-                        "Skipping {}/{}: report-only target",
-                        v.framework().name(),
-                        v.name()
-                    );
-                    reports.push(ApplyReport {
-                        framework: v.framework().name(),
-                        variant: v.name(),
-                        removed: 0,
-                        freed_bytes: 0,
-                        skipped: 1,
-                        errors: vec!["skipped: report-only".into()],
-                    });
+                    reports.push(skipped_report(v, "skipped: report-only"));
                     continue;
                 }
                 _ => {}
@@ -240,19 +204,35 @@ pub fn run(
             Ok(r) => {
                 if !json {
                     let prefix = if apply { "APPLIED" } else { "DRY-RUN" };
-                    let freed = human_size(r.freed_bytes);
+                    let status = apply_status(&r, apply);
+                    let details = if !r.errors.is_empty() {
+                        if apply {
+                            format!("; errors: {}", r.errors.join("; "))
+                        } else {
+                            let info: Vec<&str> = r
+                                .errors
+                                .iter()
+                                .map(|s| s.as_str())
+                                .filter(|e| !e.starts_with("dry-run:"))
+                                .collect();
+                            if info.is_empty() {
+                                String::new()
+                            } else {
+                                format!("; {}", info.join("; "))
+                            }
+                        }
+                    } else {
+                        String::new()
+                    };
                     println!(
-                        "[{prefix}] {}/{}: removed {} items, freed {freed}, skipped {}",
-                        r.framework, r.variant, r.removed, r.skipped
+                        "[{prefix}] {}/{}: {} ({status}){details}",
+                        r.framework, r.variant, summary_line(&r, apply),
                     );
-                    for err in &r.errors {
-                        eprintln!("  error: {err}");
-                    }
                 }
                 reports.push(r);
             }
             Err(e) => {
-                eprintln!("Error cleaning {}/{}: {e}", v.framework().name(), v.name());
+                eprintln!("[{}] {}/{}: command failed ({})", prefix(apply), v.framework().name(), v.name(), e);
             }
         }
     }
@@ -270,6 +250,64 @@ pub fn run(
         );
     }
     Ok(())
+}
+
+fn prefix(apply: bool) -> &'static str {
+    if apply { "APPLIED" } else { "DRY-RUN" }
+}
+
+fn apply_status(report: &ApplyReport, apply: bool) -> &'static str {
+    if !apply {
+        return "dry-run";
+    }
+    if report.skipped > 0 {
+        return "skipped";
+    }
+    if report.removed > 0 {
+        return "applied";
+    }
+    if !report.errors.is_empty() {
+        return "failed";
+    }
+    "no-op"
+}
+
+fn summary_line(report: &ApplyReport, apply: bool) -> String {
+    if !apply {
+        let would = report.skipped;
+        let bytes = human_size(report.freed_bytes);
+        if would > 0 {
+            format!("would remove {would} items ({bytes})")
+        } else {
+            "nothing to clean".to_string()
+        }
+    } else if report.removed > 0 {
+        let freed = human_size(report.freed_bytes);
+        format!("removed {} items, freed {freed}", report.removed)
+    } else if report.skipped > 0 {
+        format!("skipped {} items", report.skipped)
+    } else if !report.errors.is_empty() {
+        let first = &report.errors[0];
+        if first.len() > 80 {
+            format!("{}...", &first[..77])
+        } else {
+            first.to_string()
+        }
+    } else {
+        "nothing to clean".to_string()
+    }
+}
+
+fn skipped_report(v: &dyn crate::framework::Variant, reason: &str) -> ApplyReport {
+    eprintln!("[SKIPPED] {}/{}: {reason}", v.framework().name(), v.name());
+    ApplyReport {
+        framework: v.framework().name(),
+        variant: v.name(),
+        removed: 0,
+        freed_bytes: 0,
+        skipped: 1,
+        errors: vec![reason.into()],
+    }
 }
 
 pub fn doctor(config_path: &str, json: bool) -> Result<()> {
