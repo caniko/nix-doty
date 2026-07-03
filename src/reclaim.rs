@@ -604,9 +604,34 @@ fn sort_report_targets(
     unassigned_targets: &mut [ReclaimTarget],
 ) {
     for fs in filesystems {
-        fs.targets.sort_by(target_sort);
+        let mounts: Vec<&str> = fs.mounts.iter().map(|s| s.as_str()).collect();
+        fs.targets.sort_by(|a, b| target_sort_with_surfaces(a, b, &mounts));
     }
     unassigned_targets.sort_by(target_sort);
+}
+
+fn target_sort_with_surfaces(
+    a: &ReclaimTarget,
+    b: &ReclaimTarget,
+    mounts: &[&str],
+) -> std::cmp::Ordering {
+    surface_priority(a, mounts)
+        .cmp(&surface_priority(b, mounts))
+        .then(target_sort(a, b))
+}
+
+fn surface_priority(target: &ReclaimTarget, mounts: &[&str]) -> u8 {
+    if target.surfaces.is_empty() {
+        return 2;
+    }
+    if target.scope != TargetScope::SingleSurface {
+        return 1;
+    }
+    let matches = target
+        .surfaces
+        .iter()
+        .any(|s| mounts.contains(&s.as_str()));
+    if matches { 0 } else { 1 }
 }
 
 fn target_sort(a: &ReclaimTarget, b: &ReclaimTarget) -> std::cmp::Ordering {
@@ -790,7 +815,7 @@ pub fn format_report_human(report: &ReclaimReport) -> String {
 fn format_target_row(target: &ReclaimTarget) -> String {
     let surfaces = if target.surfaces.is_empty() {
         match target.scope {
-            TargetScope::SingleSurface => "-".to_string(),
+            TargetScope::SingleSurface => "\u{2014}".to_string(),
             TargetScope::MultiSurface => "multi-surface".to_string(),
             TargetScope::Unassigned => "unassigned".to_string(),
         }
@@ -800,7 +825,7 @@ fn format_target_row(target: &ReclaimTarget) -> String {
     let notes = if target.paths.is_empty() {
         target.notes.clone()
     } else {
-        format!("{} — {}", target.notes, target.paths.join(", "))
+        format!("{} \u{2014} {}", target.notes, target.paths.join(", "))
     };
     let notes = target
         .skip_reason
