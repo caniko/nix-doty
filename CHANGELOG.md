@@ -4,6 +4,15 @@
 
 ### Added
 
+- `tmp-stale` target framework: purge stale `/tmp/nix-shell.*` and canix-preflight temp directories
+- `canix-preflight-cache` target framework: size-cap cleanup for `~/.cache/canix/preflight` project caches
+- `purge-orphan-home-images` variant in `chessbender-state` target
+- `purge-backups` variant in `steampipe-state` target
+
+### Changed
+
+- opencode-cache snapshot inspection uses `total_paths_size_bounded` instead of per-file iteration
+
 - Config module: JSON target config loading with per-variant settings
 - `--config` CLI argument to `status` and `run` commands
 - `inspect_with_settings` and `apply_with_settings` default methods on `Variant` trait
