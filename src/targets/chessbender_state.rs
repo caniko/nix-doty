@@ -12,7 +12,7 @@ impl Framework for ChessbenderStateFramework {
         "Chessbender cluster VM disk images and cluster state"
     }
     fn variants(&self) -> &[&'static dyn Variant] {
-        &[&PurgeBackups, &PurgeClusterVms]
+        &[&PurgeBackups, &PurgeOrphanHomeImages, &PurgeClusterVms]
     }
 }
 
@@ -52,6 +52,29 @@ fn backup_images(vm_path: &str) -> Vec<(String, u64)> {
             let path = e.path().to_string_lossy().to_string();
             let size = e.metadata().map(|m| m.len()).unwrap_or(0);
             (path, size)
+        })
+        .collect()
+}
+
+fn orphan_home_images(cluster_path: &str) -> Vec<(String, u64)> {
+    let dir = match std::fs::read_dir(cluster_path) {
+        Ok(d) => d,
+        Err(_) => return vec![],
+    };
+    dir.filter_map(|e| e.ok())
+        .filter_map(|e| {
+            let file_name = e.file_name().to_string_lossy().to_string();
+            let vm_name = file_name.strip_suffix("-home.img")?;
+            if !vm_name.starts_with("vm-") {
+                return None;
+            }
+            let vm_dir = format!("{cluster_path}/{vm_name}");
+            if !exec::path_exists(&vm_dir) {
+                return None;
+            }
+            let path = e.path().to_string_lossy().to_string();
+            let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+            Some((path, size))
         })
         .collect()
 }
@@ -111,6 +134,75 @@ impl Variant for PurgeBackups {
                     freed += size;
                     removed += 1;
                 }
+            }
+        }
+        Ok(ApplyReport {
+            framework: self.framework().name(),
+            variant: self.name(),
+            removed,
+            freed_bytes: freed,
+            skipped: 0,
+            errors,
+        })
+    }
+}
+
+struct PurgeOrphanHomeImages;
+impl Variant for PurgeOrphanHomeImages {
+    fn name(&self) -> &'static str {
+        "purge-orphan-home-images"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
+    fn inspect(&self) -> Result<Inspection> {
+        let (count, bytes) = count_orphan_home_images();
+        Ok(Inspection {
+            framework: self.framework().name(),
+            variant: self.name(),
+            path: cluster_dirs()
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "/home/<user>/.local/state/chessbender-cluster".into()),
+            size_bytes: Some(bytes),
+            age_oldest_days: None,
+            would_remove: count,
+            notes: format!(
+                "orphan top-level VM home images with matching vm dirs: {count} files, {}",
+                fmt_bytes(bytes)
+            ),
+        })
+    }
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        let images = all_orphan_home_images();
+        let bytes = images.iter().map(|(_, size)| *size).sum();
+        if !apply {
+            return Ok(ApplyReport {
+                framework: self.framework().name(),
+                variant: self.name(),
+                removed: 0,
+                freed_bytes: 0,
+                skipped: images.len() as u64,
+                errors: vec![format!(
+                    "dry-run: would delete {} orphan VM home images ({})",
+                    images.len(),
+                    fmt_bytes(bytes)
+                )],
+            });
+        }
+
+        let mut removed = 0u64;
+        let mut freed = 0u64;
+        let mut errors = Vec::new();
+        for (path, size) in images {
+            if let Err(e) = exec::remove_file(&path) {
+                errors.push(format!("cannot remove {path}: {e}"));
+            } else {
+                freed += size;
+                removed += 1;
             }
         }
         Ok(ApplyReport {
@@ -201,6 +293,22 @@ fn count_backups() -> (u64, u64) {
             bytes += size;
         }
     }
+    (count, bytes)
+}
+
+fn all_orphan_home_images() -> Vec<(String, u64)> {
+    let mut images = Vec::new();
+    for cluster in cluster_dirs() {
+        images.extend(orphan_home_images(&cluster));
+    }
+    images.sort_by(|a, b| a.0.cmp(&b.0));
+    images
+}
+
+fn count_orphan_home_images() -> (u64, u64) {
+    let images = all_orphan_home_images();
+    let count = images.len() as u64;
+    let bytes = images.iter().map(|(_, size)| *size).sum();
     (count, bytes)
 }
 
