@@ -141,8 +141,8 @@ impl Variant for PurgeSnapshots {
                     return (0, 0);
                 }
                 let entries = exec::read_dir(&path).unwrap_or_default();
-                let bytes: u64 = entries.iter().filter_map(|e| exec::file_size(e).ok()).sum();
-                (entries.len() as u64, bytes)
+                let scan = exec::total_paths_size_bounded(&entries, 20_000);
+                (entries.len() as u64, scan.bytes)
             })
             .fold((0, 0), |(ac, ab), (c, b)| (ac + c, ab + b));
         Ok(Inspection {
@@ -169,8 +169,8 @@ impl Variant for PurgeSnapshots {
                         return (0, 0);
                     }
                     let entries = exec::read_dir(&path).unwrap_or_default();
-                    let bytes: u64 = entries.iter().filter_map(|e| exec::file_size(e).ok()).sum();
-                    (entries.len() as u64, bytes)
+                    let scan = exec::total_paths_size_bounded(&entries, 20_000);
+                    (entries.len() as u64, scan.bytes)
                 })
                 .fold((0, 0), |(ac, ab), (c, b)| (ac + c, ab + b));
             return Ok(ApplyReport {
