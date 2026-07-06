@@ -14,7 +14,7 @@ impl Framework for SteampipeStateFramework {
         "Steampipe AI training VM disk images and cached state"
     }
     fn variants(&self) -> &[&'static dyn Variant] {
-        &[&PurgeStaleVms, &PurgeAllVms]
+        &[&PurgeStaleVms, &PurgeBackups, &PurgeAllVms]
     }
 }
 
@@ -174,6 +174,77 @@ impl Variant for PurgeAllVms {
     }
 }
 
+struct PurgeBackups;
+impl Variant for PurgeBackups {
+    fn name(&self) -> &'static str {
+        "purge-backups"
+    }
+    fn framework(&self) -> &'static dyn Framework {
+        &FRAMEWORK
+    }
+    fn tier(&self) -> Tier {
+        Tier::Safe
+    }
+    fn inspect(&self) -> Result<Inspection> {
+        let backups = backup_images();
+        let bytes = backups.iter().map(|(_, size)| *size).sum();
+        Ok(Inspection {
+            framework: self.framework().name(),
+            variant: self.name(),
+            path: steampipe_dirs()
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "/home/<user>/.local/state/steampipe".into()),
+            size_bytes: Some(bytes),
+            age_oldest_days: None,
+            would_remove: backups.len() as u64,
+            notes: format!(
+                "steampipe backup disk images: {} files, {}",
+                backups.len(),
+                fmt_bytes(bytes)
+            ),
+        })
+    }
+    fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        let backups = backup_images();
+        let bytes = backups.iter().map(|(_, size)| *size).sum();
+        if !apply {
+            return Ok(ApplyReport {
+                framework: self.framework().name(),
+                variant: self.name(),
+                removed: 0,
+                freed_bytes: 0,
+                skipped: backups.len() as u64,
+                errors: vec![format!(
+                    "dry-run: would delete {} steampipe backup images ({})",
+                    backups.len(),
+                    fmt_bytes(bytes)
+                )],
+            });
+        }
+
+        let mut removed = 0u64;
+        let mut freed = 0u64;
+        let mut errors = Vec::new();
+        for (path, size) in backups {
+            if let Err(e) = exec::remove_file(&path) {
+                errors.push(format!("cannot remove {path}: {e}"));
+            } else {
+                removed += 1;
+                freed += size;
+            }
+        }
+        Ok(ApplyReport {
+            framework: self.framework().name(),
+            variant: self.name(),
+            removed,
+            freed_bytes: freed,
+            skipped: 0,
+            errors,
+        })
+    }
+}
+
 fn is_vm_dir(name: &str) -> bool {
     name.starts_with("vm-") || name == "fixture"
 }
@@ -256,6 +327,40 @@ fn calc_all_vm_sizes() -> Result<(u64, u64, String)> {
         fmt_bytes(total_bytes)
     );
     Ok((total_entries, total_bytes, notes))
+}
+
+fn backup_images() -> Vec<(String, u64)> {
+    let mut backups = Vec::new();
+    for dir in steampipe_dirs() {
+        collect_backup_images(&dir, &mut backups);
+    }
+    backups.sort_by(|a, b| a.0.cmp(&b.0));
+    backups
+}
+
+fn collect_backup_images(dir: &str, backups: &mut Vec<(String, u64)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if metadata.file_type().is_symlink() {
+            continue;
+        }
+        if metadata.is_dir() {
+            collect_backup_images(&path.to_string_lossy(), backups);
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if name.contains("backup") {
+            backups.push((path.to_string_lossy().to_string(), metadata.len()));
+        }
+    }
 }
 
 fn fmt_bytes(bytes: u64) -> String {
