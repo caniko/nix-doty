@@ -6,6 +6,7 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     crane.url = "github:ipetkov/crane";
     flake-parts.url = "github:hercules-ci/flake-parts";
+    rs-harbor.url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk";
   };
 
   outputs = inputs @ {
@@ -14,6 +15,7 @@
     crane,
     flake-parts,
     rust-overlay,
+    rs-harbor,
     ...
   }:
     flake-parts.lib.mkFlake {inherit inputs;} {
@@ -35,6 +37,10 @@
           extensions = ["rust-src" "rustfmt" "clippy"];
         };
         craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        cross = rs-harbor.lib.mkCross {
+          inherit pkgs system;
+          enableOsxcross = false;
+        };
 
         commonArgs = {
           src = craneLib.cleanCargoSource ./.;
@@ -42,9 +48,7 @@
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
-      in {
-        packages = {
-          default = craneLib.buildPackage (commonArgs
+        defaultPackage = craneLib.buildPackage (commonArgs
             // {
               inherit cargoArtifacts;
               meta = {
@@ -55,7 +59,21 @@
               };
             });
 
-          doty = self.packages.${system}.default;
+        crossPackageSet = rs-harbor.lib.mkCrossPackages ({
+          inherit pkgs craneLib cross commonArgs;
+          pname = "doty";
+          targets = ["native" "aarch64-linux"];
+        } // lib.optionalAttrs (builtins.hasAttr "toolchainArgs" (builtins.functionArgs rs-harbor.lib.mkCrossPackages)) {
+          toolchainArgs = {
+            channel = "stable";
+            extensions = ["rust-src" "rustfmt" "clippy"];
+          };
+        });
+      in {
+        packages = {
+          default = defaultPackage;
+          doty = defaultPackage;
+          "doty-aarch64-linux" = crossPackageSet."doty-aarch64-linux";
         };
 
         checks = {
@@ -72,6 +90,7 @@
       };
 
       flake = {
+        crossPackages."x86_64-linux"."aarch64-linux".doty = self.packages."x86_64-linux"."doty-aarch64-linux";
         nixosModules.default = {pkgs, ...}: {
           imports = [./module/default.nix];
           services.doty.package = self.packages.${pkgs.system}.default;
