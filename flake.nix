@@ -93,7 +93,7 @@
         crossPackages."x86_64-linux"."aarch64-linux".doty = self.packages."x86_64-linux"."doty-aarch64-linux";
         nixosModules.default = {pkgs, ...}: {
           imports = [./module/default.nix];
-          services.doty.package = self.packages.${pkgs.system}.default;
+          services.doty.package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
         };
       };
     };
