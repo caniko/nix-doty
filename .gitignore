@@ -12,3 +12,6 @@ Cargo.lock.bak
 *.swp
 .vscode/
 .idea/
+
+# System
+.nix-doty-pkgs-system/
