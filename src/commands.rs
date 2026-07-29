@@ -226,13 +226,21 @@ pub fn run(
                     };
                     println!(
                         "[{prefix}] {}/{}: {} ({status}){details}",
-                        r.framework, r.variant, summary_line(&r, apply),
+                        r.framework,
+                        r.variant,
+                        summary_line(&r, apply),
                     );
                 }
                 reports.push(r);
             }
             Err(e) => {
-                eprintln!("[{}] {}/{}: command failed ({})", prefix(apply), v.framework().name(), v.name(), e);
+                eprintln!(
+                    "[{}] {}/{}: command failed ({})",
+                    prefix(apply),
+                    v.framework().name(),
+                    v.name(),
+                    e
+                );
             }
         }
     }

@@ -39,9 +39,7 @@ fn keep_since_hours(settings: &Value) -> u32 {
 }
 
 fn list_images() -> Vec<PodmanImage> {
-    let out = exec::run_stdout(&[
-        "podman", "images", "--all", "--format", "json",
-    ]);
+    let out = exec::run_stdout(&["podman", "images", "--all", "--format", "json"]);
     match out {
         Ok(json) => serde_json::from_str(&json).unwrap_or_default(),
         Err(_) => Vec::new(),
@@ -50,16 +48,19 @@ fn list_images() -> Vec<PodmanImage> {
 
 fn prune_image_count(hours: u32) -> u64 {
     let out = exec::run_stdout(&[
-        "podman", "image", "prune", "--all",
-        "--filter", &format!("until={hours}h"),
+        "podman",
+        "image",
+        "prune",
+        "--all",
+        "--filter",
+        &format!("until={hours}h"),
         "--force",
     ]);
     match out {
-        Ok(text) => {
-            text.lines()
-                .filter(|l| l.contains("deleted") || l.contains("untagged"))
-                .count() as u64
-        }
+        Ok(text) => text
+            .lines()
+            .filter(|l| l.contains("deleted") || l.contains("untagged"))
+            .count() as u64,
         Err(_) => 0,
     }
 }
@@ -86,7 +87,10 @@ impl Variant for DiskReport {
             size_bytes: Some(total_size),
             age_oldest_days: None,
             would_remove: 0,
-            notes: format!("{count} podman images ({:.1} GiB)", total_size as f64 / 1073741824.0),
+            notes: format!(
+                "{count} podman images ({:.1} GiB)",
+                total_size as f64 / 1073741824.0
+            ),
         })
     }
     fn apply(&self, _apply: bool, _force: bool) -> Result<ApplyReport> {
@@ -136,7 +140,12 @@ impl Variant for PruneInactiveOlder {
     fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
         self.apply_with_settings(apply, _force, &Value::Null)
     }
-    fn apply_with_settings(&self, apply: bool, _force: bool, settings: &Value) -> Result<ApplyReport> {
+    fn apply_with_settings(
+        &self,
+        apply: bool,
+        _force: bool,
+        settings: &Value,
+    ) -> Result<ApplyReport> {
         let hours = keep_since_hours(settings);
         if !apply {
             let images = list_images();

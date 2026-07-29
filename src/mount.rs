@@ -52,8 +52,11 @@ struct MountIdentity {
 
 fn findmnt_identities() -> Result<BTreeMap<String, MountIdentity>> {
     let out = exec::run_stdout(&[
-        "findmnt", "--json", "--bytes",
-        "--output", "TARGET,SOURCE,FSTYPE,MAJ:MIN,FSROOT",
+        "findmnt",
+        "--json",
+        "--bytes",
+        "--output",
+        "TARGET,SOURCE,FSTYPE,MAJ:MIN,FSROOT",
     ])?;
     let root: FindmntRoot = serde_json::from_str(&out)?;
     let mut map = BTreeMap::new();
@@ -61,18 +64,18 @@ fn findmnt_identities() -> Result<BTreeMap<String, MountIdentity>> {
     Ok(map)
 }
 
-fn flatten_findmnt(
-    entries: &[FindmntEntry],
-    map: &mut BTreeMap<String, MountIdentity>,
-) {
+fn flatten_findmnt(entries: &[FindmntEntry], map: &mut BTreeMap<String, MountIdentity>) {
     for entry in entries {
         let device = clean_source(&entry.source);
-        map.insert(entry.target.clone(), MountIdentity {
-            device,
-            fstype: entry.fstype.clone(),
-            maj_min: entry.maj_min.clone(),
-            fsroot: entry.fsroot.clone(),
-        });
+        map.insert(
+            entry.target.clone(),
+            MountIdentity {
+                device,
+                fstype: entry.fstype.clone(),
+                maj_min: entry.maj_min.clone(),
+                fsroot: entry.fsroot.clone(),
+            },
+        );
         flatten_findmnt(&entry.children, map);
     }
 }
