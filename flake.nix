@@ -6,7 +6,7 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     crane.url = "github:ipetkov/crane";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    rs-harbor.url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk&rev=c26b735eede8078f795651c4a9cbf0be8733b221";
+    rs-harbor.url = "github:caniko/rs-harbor/e2778ff3beca1bd4c1f5183313251d1fb5b46dd6";
   };
 
   outputs = inputs @ {
@@ -33,8 +33,14 @@
         };
         inherit (pkgs) lib;
 
-        rustToolchain = rs-harbor.lib.mkToolchain { toolchainProfile = "nightly"; };
-        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        toolchain = rs-harbor.lib.mkToolchain { inherit pkgs; toolchainProfile = "nightly"; };
+        craneLib = toolchain.craneLib;
+        atticAdapter = rs-harbor.lib.mkAdapter {
+          attic = {
+            endpoint = "https://attic.candee.baby";
+            cache = "canix";
+          };
+        };
         cross = rs-harbor.lib.mkCross {
           inherit pkgs system;
           enableOsxcross = false;
@@ -67,6 +73,12 @@
           default = defaultPackage;
           doty = defaultPackage;
           "doty-aarch64-linux" = crossPackageSet."doty-aarch64-linux";
+        };
+
+        apps.push-flake-inputs = rs-harbor.lib.mkAtticPush {
+          inherit pkgs;
+          adapter = atticAdapter;
+          flake = ".";
         };
 
         checks = {
