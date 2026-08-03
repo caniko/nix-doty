@@ -1,0 +1,5 @@
+[ci]
+provider = "crow"
+platform = "forgejo"
+runtime = "nix"
+runner = "codefloe-global"
