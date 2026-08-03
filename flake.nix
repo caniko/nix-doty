@@ -6,7 +6,7 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     crane.url = "github:ipetkov/crane";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    rs-harbor.url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk&rev=9bfa8bdb0ecb22d7bc11448665f7fbaebae7a759";
+    rs-harbor.url = "git+https://codefloe.com/caniko/rs-harbor.git?ref=trunk&rev=7fa1c2104dab4e1dbaa1aaa6df84bba815aa282d";
   };
 
   outputs = inputs @ {
@@ -33,10 +33,15 @@
         };
         inherit (pkgs) lib;
 
-        rustToolchain = pkgs.rust-bin.stable.latest.default.override {
-          extensions = ["rust-src" "rustfmt" "clippy"];
+        toolchain = rs-harbor.lib.mkToolchain {
+          inherit pkgs;
+          toolchainProfile = "nightly";
+          cache = {
+            enable = true;
+            cacheRoot = "/tmp/sccache";
+          };
         };
-        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        craneLib = toolchain.craneLib;
         cross = rs-harbor.lib.mkCross {
           inherit pkgs system;
           enableOsxcross = false;
@@ -59,16 +64,11 @@
               };
             });
 
-        crossPackageSet = rs-harbor.lib.mkCrossPackages ({
-          inherit pkgs craneLib cross commonArgs;
+        crossPackageSet = rs-harbor.lib.mkCrossPackages {
+          inherit pkgs cross commonArgs craneLib;
           pname = "doty";
           targets = ["native" "aarch64-linux"];
-        } // lib.optionalAttrs (builtins.hasAttr "toolchainArgs" (builtins.functionArgs rs-harbor.lib.mkCrossPackages)) {
-          toolchainArgs = {
-            channel = "stable";
-            extensions = ["rust-src" "rustfmt" "clippy"];
-          };
-        });
+        };
       in {
         packages = {
           default = defaultPackage;
