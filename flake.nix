@@ -6,7 +6,7 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     crane.url = "github:ipetkov/crane";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    rs-harbor.url = "git+https://codeberg.org/caniko/rs-harbor.git?ref=trunk&rev=c26b735eede8078f795651c4a9cbf0be8733b221";
+    rs-harbor.url = "git+ssh://git@codeberg.org/caniko/rs-harbor.git?ref=trunk&rev=f209ddbca3fdbb0dc31fa3886ccc2ff7369c18ac";
   };
 
   outputs = inputs @ {
@@ -33,8 +33,8 @@
         };
         inherit (pkgs) lib;
 
-        rustToolchain = rs-harbor.lib.mkToolchain { toolchainProfile = "nightly"; };
-        craneLib = (crane.mkLib pkgs).overrideToolchain rustToolchain;
+        toolchain = rs-harbor.lib.mkToolchain { inherit pkgs; toolchainProfile = "nightly"; };
+        craneLib = toolchain.craneLib;
         cross = rs-harbor.lib.mkCross {
           inherit pkgs system;
           enableOsxcross = false;
@@ -58,7 +58,7 @@
             });
 
         crossPackageSet = rs-harbor.lib.mkCrossPackages {
-          inherit pkgs craneLib cross commonArgs;
+          inherit pkgs cross commonArgs craneLib;
           pname = "doty";
           targets = ["native" "aarch64-linux"];
         };
