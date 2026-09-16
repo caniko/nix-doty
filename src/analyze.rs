@@ -22,12 +22,20 @@
 //! - `oldest_age_days` / `newest_age_days`: descendant-inclusive whole-day ages
 //!   over observed entries only. `None` means unknown (nothing observable, a
 //!   metadata error, or an intentionally skipped subtree).
-//! - `direct_age_days`: age of the top-level path itself.
-//! - `review_queue`: entries needing human attention (incomplete, unknown age,
-//!   or skipped). Unknown entries are never ranked as confidently old.
+//! - `direct_age_days`: age of the top-level path itself. Descendants never
+//!   supply it: if the top-level timestamp is unavailable it stays `None`.
+//! - `age_unknown`: true when some activity below the entry is unobservable
+//!   (missing timestamps, excluded other-device content). Ordinary skipped
+//!   symlinks do not set it. Age-unknown entries are excluded from age
+//!   filtering, ranked last, and sent to `review_queue`.
+//! - `review_queue`: entries needing human attention (incomplete, skipped,
+//!   unknown activity). Unknown entries are never ranked as confidently old.
+//!   Nested symlink skips (`nested_skipped`) do not queue an entry by
+//!   themselves.
 //! - `issues`: bounded arbitrary sample of skipped/error notes in discovery
 //!   order; `issues_total`, `issues_by_reason`, and `issues_omitted` are the
-//!   authoritative counts.
+//!   authoritative counts. Only the sample is capped: counts cover every issue
+//!   even with `--max-issues 0`.
 //!
 //! Exit behavior: the command exits 0 whenever the root could be opened and
 //! enumerated, even when `complete` is false. A non-zero exit means a hard
@@ -37,10 +45,9 @@
 use anyhow::Result;
 use clap::{Args, Subcommand};
 use serde::Serialize;
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+#[cfg(target_os = "linux")]
+use std::path::Path;
+use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Subcommand)]
 pub enum Agent {
@@ -202,6 +209,11 @@ struct Entry {
     /// devices). The entry itself stays `complete`: only the top-level path's
     /// own skip sets `skipped_reason`.
     nested_skipped: u64,
+    /// True when some activity is unobservable: a missing modification time or
+    /// excluded (other-device) content below this entry. Ordinary skipped
+    /// symlinks do NOT set this. Age-unknown entries stay visible but are
+    /// excluded from age filtering, ranked last, and sent to the review queue.
+    age_unknown: bool,
     direct_age_days: Option<u64>,
     oldest_age_days: Option<u64>,
     newest_age_days: Option<u64>,
@@ -210,6 +222,7 @@ struct Entry {
 }
 
 impl Entry {
+    #[cfg(target_os = "linux")]
     fn stub(path: PathBuf) -> Self {
         Self {
             path,
@@ -217,12 +230,69 @@ impl Entry {
             logical_bytes: 0,
             observed_entries: 0,
             nested_skipped: 0,
+            age_unknown: false,
             direct_age_days: None,
             oldest_age_days: None,
             newest_age_days: None,
             complete: true,
             skipped_reason: None,
         }
+    }
+}
+
+/// Why an entry needs human attention. Unknown entries are never ranked as
+/// confidently old: age filtering and oldest-first ordering only admit
+/// complete entries with fully observed activity.
+#[cfg(target_os = "linux")]
+fn review_reason(item: &Entry) -> Option<String> {
+    if !item.complete {
+        Some(
+            item.skipped_reason
+                .clone()
+                .map(|reason| format!("incomplete scan; {reason}"))
+                .unwrap_or_else(|| "incomplete scan".to_string()),
+        )
+    } else if let Some(reason) = &item.skipped_reason {
+        Some(format!("skipped ({reason}); contents and activity unknown"))
+    } else if item.age_unknown || item.newest_age_days.is_none() {
+        Some("unknown activity (missing timestamps or excluded content)".to_string())
+    } else {
+        None
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn passes_age_filter(item: &Entry, older_than_days: Option<u32>) -> bool {
+    older_than_days.is_none_or(|days| {
+        item.complete
+            && !item.age_unknown
+            && item
+                .newest_age_days
+                .is_some_and(|age| age >= u64::from(days))
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn sort_entries(entries: &mut [Entry], sort: SortMode) {
+    match sort {
+        SortMode::Size => entries.sort_by(|a, b| {
+            b.logical_bytes
+                .cmp(&a.logical_bytes)
+                .then_with(|| a.path.cmp(&b.path))
+        }),
+        SortMode::Oldest => entries.sort_by(|a, b| {
+            let rank = |entry: &Entry| {
+                if entry.complete && !entry.age_unknown && entry.newest_age_days.is_some() {
+                    0
+                } else {
+                    1
+                }
+            };
+            rank(a)
+                .cmp(&rank(b))
+                .then_with(|| b.newest_age_days.cmp(&a.newest_age_days))
+                .then_with(|| a.path.cmp(&b.path))
+        }),
     }
 }
 
@@ -305,19 +375,35 @@ fn scan(options: &Options) -> Result<Report> {
             .map(|modified| now.duration_since(modified).unwrap_or_default().as_secs() / 86400)
     }
 
+    /// Issue accounting with a bounded retained sample. Reason counts cover
+    /// every issue; message strings are kept only while the sample has
+    /// capacity, so `--max-issues 0` still reports exact totals.
+    struct IssueLog {
+        counts: BTreeMap<String, usize>,
+        sample: Vec<String>,
+        cap: usize,
+    }
+
+    impl IssueLog {
+        fn record(&mut self, key: &str, message: String) {
+            *self.counts.entry(key.to_string()).or_insert(0) += 1;
+            if self.sample.len() < self.cap {
+                self.sample.push(message);
+            }
+        }
+    }
+
     struct Walker<'a> {
         device: u64,
         now: SystemTime,
         max_depth: u32,
         remaining: &'a mut u32,
-        issues: &'a mut Vec<String>,
-        issue_counts: &'a mut BTreeMap<String, usize>,
+        issues: &'a mut IssueLog,
     }
 
     impl Walker<'_> {
         fn record(&mut self, key: &str, message: String) {
-            *self.issue_counts.entry(key.to_string()).or_insert(0) += 1;
-            self.issues.push(message);
+            self.issues.record(key, message);
         }
 
         /// Hard failure for this subtree: metadata unreadable, budget or depth
@@ -379,9 +465,17 @@ fn scan(options: &Options) -> Result<Report> {
                     "skipped filesystem boundary (other device)",
                     true,
                 );
+                item.age_unknown = true;
                 return;
             }
             item.direct_age_days = age_days(self.now, &meta);
+            if item.direct_age_days.is_none() {
+                item.age_unknown = true;
+                self.record(
+                    "timestamp error",
+                    format!("{:?}: modification time unavailable", item.path.clone()),
+                );
+            }
             match item.entry_kind.as_str() {
                 "file" => {
                     item.logical_bytes = meta.len();
@@ -424,6 +518,8 @@ fn scan(options: &Options) -> Result<Report> {
                     "skipped filesystem boundary (other device)",
                     depth == 1,
                 );
+                // Excluded content means unobservable activity below this entry.
+                item.age_unknown = true;
                 return;
             }
             if !meta.is_file() && !meta.is_dir() {
@@ -438,14 +534,21 @@ fn scan(options: &Options) -> Result<Report> {
             }
             // A directory's own mtime counts (e.g. renames), then descendants
             // widen the range. A recent child keeps an old parent out of the
-            // age filter via newest_age_days.
-            if item.direct_age_days.is_none() {
-                if let Some(age) = age_days(self.now, &meta) {
-                    item.direct_age_days = Some(age);
-                    self.fold_age(item, age);
+            // age filter via newest_age_days. A missing timestamp is recorded
+            // instead of silently narrowing the range.
+            let age = age_days(self.now, &meta);
+            if depth == 1 {
+                item.direct_age_days = age;
+            }
+            match age {
+                Some(age) => self.fold_age(item, age),
+                None => {
+                    item.age_unknown = true;
+                    self.record(
+                        "timestamp error",
+                        format!("{display:?}: modification time unavailable"),
+                    );
                 }
-            } else if let Some(age) = age_days(self.now, &meta) {
-                self.fold_age(item, age);
             }
             if meta.is_file() {
                 item.logical_bytes = item.logical_bytes.saturating_add(meta.len());
@@ -577,6 +680,11 @@ fn scan(options: &Options) -> Result<Report> {
         caveat: "Live metadata scan, not a snapshot or deletion authorization. Logical file bytes are not reclaimable disk space; hardlinks count per pathname. Symlinks, other devices and special files are skipped. Partial scans are lower bounds; bounded traversal order is filesystem-dependent. Modification age does not prove inactivity.",
     };
     let mut remaining = options.max_entries;
+    let mut log = IssueLog {
+        counts: BTreeMap::new(),
+        sample: Vec::new(),
+        cap: options.max_issues as usize,
+    };
 
     // Discover every top-level sibling first so one huge directory cannot hide
     // the rest of the root when the budget runs out mid-descent.
@@ -588,13 +696,10 @@ fn scan(options: &Options) -> Result<Report> {
     while root_children.peek().is_some() {
         if remaining == 0 {
             report.complete = false;
-            *report
-                .issues_by_reason
-                .entry("entry budget".to_string())
-                .or_insert(0) += 1;
-            report
-                .issues
-                .push("Entry budget reached; root enumeration may be incomplete".to_string());
+            log.record(
+                "entry budget",
+                "Entry budget reached; root enumeration may be incomplete".to_string(),
+            );
             break;
         }
         let Some(child) = root_children.next() else {
@@ -605,11 +710,7 @@ fn scan(options: &Options) -> Result<Report> {
             Ok(child) => names.push(child.file_name()),
             Err(error) => {
                 report.complete = false;
-                *report
-                    .issues_by_reason
-                    .entry("enumeration error".to_string())
-                    .or_insert(0) += 1;
-                report.issues.push(error.to_string());
+                log.record("enumeration error", error.to_string());
             }
         }
     }
@@ -621,13 +722,10 @@ fn scan(options: &Options) -> Result<Report> {
         let path = options.path.join(name);
         let Some(path_str) = path.to_str() else {
             report.complete = false;
-            *report
-                .issues_by_reason
-                .entry("non-UTF-8 path".to_string())
-                .or_insert(0) += 1;
-            report
-                .issues
-                .push(format!("Skipped non-UTF-8 top-level path: {path:?}"));
+            log.record(
+                "non-UTF-8 path",
+                format!("Skipped non-UTF-8 top-level path: {path:?}"),
+            );
             report.skipped_entries += 1;
             continue;
         };
@@ -642,8 +740,7 @@ fn scan(options: &Options) -> Result<Report> {
             now,
             max_depth: options.max_depth,
             remaining: &mut remaining,
-            issues: &mut report.issues,
-            issue_counts: &mut report.issues_by_reason,
+            issues: &mut log,
         };
         if options.inventory {
             walker.inventory_child(&access, &mut item);
@@ -672,28 +769,10 @@ fn scan(options: &Options) -> Result<Report> {
     let mut review_queue: Vec<ReviewItem> = all
         .iter()
         .filter_map(|item| {
-            if !item.complete {
-                Some(ReviewItem {
-                    path: item.path.clone(),
-                    reason: item
-                        .skipped_reason
-                        .clone()
-                        .map(|reason| format!("incomplete scan; {reason}"))
-                        .unwrap_or_else(|| "incomplete scan".to_string()),
-                })
-            } else if let Some(reason) = &item.skipped_reason {
-                Some(ReviewItem {
-                    path: item.path.clone(),
-                    reason: format!("skipped ({reason}); contents and activity unknown"),
-                })
-            } else if item.newest_age_days.is_none() {
-                Some(ReviewItem {
-                    path: item.path.clone(),
-                    reason: "unknown modification age".to_string(),
-                })
-            } else {
-                None
-            }
+            review_reason(item).map(|reason| ReviewItem {
+                path: item.path.clone(),
+                reason,
+            })
         })
         .collect();
     review_queue.sort_by(|a, b| a.path.cmp(&b.path));
@@ -702,47 +781,21 @@ fn scan(options: &Options) -> Result<Report> {
     report.review_queue = review_queue;
 
     // Age filters apply to newest observed activity and only to complete
-    // entries with known ages; everything else stays visible via review_queue.
+    // entries with fully observed activity; everything else stays visible via
+    // review_queue.
     let mut matching: Vec<Entry> = all
         .into_iter()
-        .filter(|item| {
-            options.older_than_days.is_none_or(|days| {
-                item.complete
-                    && item
-                        .newest_age_days
-                        .is_some_and(|age| age >= u64::from(days))
-            })
-        })
+        .filter(|item| passes_age_filter(item, options.older_than_days))
         .collect();
-    match options.sort {
-        SortMode::Size => matching.sort_by(|a, b| {
-            b.logical_bytes
-                .cmp(&a.logical_bytes)
-                .then_with(|| a.path.cmp(&b.path))
-        }),
-        SortMode::Oldest => matching.sort_by(|a, b| {
-            let rank = |entry: &Entry| {
-                if entry.complete && entry.newest_age_days.is_some() {
-                    0
-                } else {
-                    1
-                }
-            };
-            rank(a)
-                .cmp(&rank(b))
-                .then_with(|| b.newest_age_days.cmp(&a.newest_age_days))
-                .then_with(|| a.path.cmp(&b.path))
-        }),
-    }
+    sort_entries(&mut matching, options.sort);
     report.matching_entries = matching.len();
     matching.truncate(options.limit as usize);
     report.entries = matching;
 
-    report.issues_total = report.issues.len();
-    if report.issues.len() > options.max_issues as usize {
-        report.issues.truncate(options.max_issues as usize);
-    }
-    report.issues_omitted = report.issues_total - report.issues.len();
+    report.issues_total = log.counts.values().sum();
+    report.issues_by_reason = log.counts;
+    report.issues_omitted = report.issues_total - log.sample.len();
+    report.issues = log.sample;
     Ok(report)
 }
 
@@ -808,7 +861,10 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     mod linux {
-        use super::super::{Options, Path, PathBuf, Result, SortMode, scan};
+        use super::super::{
+            Entry, Options, Path, PathBuf, Result, SortMode, passes_age_filter, review_reason,
+            scan, sort_entries,
+        };
         use std::{
             fs,
             os::unix::{ffi::OsStringExt, fs::symlink},
@@ -931,19 +987,89 @@ mod tests {
         }
 
         #[test]
-        fn budget_exhaustion_marks_incomplete() -> Result<()> {
-            let (root, _outside) = fixture();
+        fn root_budget_exhaustion_leaves_complete_file_visible() -> Result<()> {
+            let root = tempfile::tempdir()?;
+            for name in ["a", "b", "c"] {
+                fs::write(root.path().join(name), "x")?;
+            }
             let mut opts = options(root.path().into());
             opts.max_entries = 1;
             let report = scan(&opts)?;
+            // The root listing stops after one file; that file is fully known.
             assert!(!report.complete);
-            // Root-listing order decides whether the single budget token lands
-            // on a file or on `tree` (whose descent then fails the budget a
-            // second time), so only the property is asserted, not the count.
-            assert!(report.issues_by_reason.get("entry budget").unwrap_or(&0) >= &1);
-            assert!(report.incomplete_entries >= 1);
-            assert!(report.review_queue_total >= 1);
+            assert_eq!(report.discovered_entries, 1);
+            assert_eq!(report.issues_by_reason.get("entry budget"), Some(&1));
+            assert_eq!(report.incomplete_entries, 0);
+            assert_eq!(report.review_queue_total, 0);
+            assert_eq!(report.matching_entries, 1);
             Ok(())
+        }
+
+        #[test]
+        fn descendant_budget_exhaustion_marks_subtree_incomplete() -> Result<()> {
+            let root = tempfile::tempdir()?;
+            fs::create_dir(root.path().join("only"))?;
+            fs::write(root.path().join("only/a"), "x")?;
+            fs::write(root.path().join("only/b"), "x")?;
+            let mut opts = options(root.path().into());
+            // One token discovers `only`; none remains for the descent.
+            opts.max_entries = 1;
+            let report = scan(&opts)?;
+            assert!(!report.complete);
+            assert_eq!(report.discovered_entries, 1);
+            let only = report.entries.first().unwrap();
+            assert!(only.path.ends_with("only"));
+            assert!(!only.complete);
+            assert_eq!(report.incomplete_entries, 1);
+            assert_eq!(report.review_queue_total, 1);
+            assert!(report.review_queue[0].path.ends_with("only"));
+            Ok(())
+        }
+
+        fn entry(path: &str) -> Entry {
+            Entry {
+                path: PathBuf::from(path),
+                entry_kind: "directory".into(),
+                logical_bytes: 0,
+                observed_entries: 1,
+                nested_skipped: 0,
+                age_unknown: false,
+                direct_age_days: Some(10),
+                oldest_age_days: Some(10),
+                newest_age_days: Some(10),
+                complete: true,
+                skipped_reason: None,
+            }
+        }
+
+        #[test]
+        fn age_unknown_entries_are_visible_but_never_confident() {
+            let mut flagged = entry("/flagged");
+            flagged.age_unknown = true;
+            let mut skipped = entry("/skipped");
+            skipped.skipped_reason = Some("skipped symlink or special file (not followed)".into());
+            skipped.newest_age_days = None;
+            let mut nested = entry("/nested");
+            nested.nested_skipped = 3;
+            let plain = entry("/plain");
+
+            assert!(review_reason(&flagged).is_some());
+            assert!(review_reason(&skipped).is_some());
+            assert!(review_reason(&nested).is_none());
+            assert!(review_reason(&plain).is_none());
+
+            assert!(!passes_age_filter(&flagged, Some(0)));
+            assert!(!passes_age_filter(&skipped, Some(0)));
+            assert!(passes_age_filter(&nested, Some(0)));
+            assert!(passes_age_filter(&plain, None));
+
+            let mut ranked = vec![flagged.clone(), skipped.clone(), nested.clone()];
+            sort_entries(&mut ranked, SortMode::Oldest);
+            // Fully observed entries first; unknown activity always last.
+            assert_eq!(ranked[0].path, PathBuf::from("/nested"));
+            let position = |name: &str| ranked.iter().position(|e| e.path.ends_with(name)).unwrap();
+            assert!(position("/skipped") > 0);
+            assert!(position("/flagged") > 0);
         }
 
         #[test]
