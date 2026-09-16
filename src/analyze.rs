@@ -29,9 +29,10 @@
 //!   symlinks do not set it. Age-unknown entries are excluded from age
 //!   filtering, ranked last, and sent to `review_queue`.
 //! - `review_queue`: entries needing human attention (incomplete, skipped,
-//!   unknown activity). Unknown entries are never ranked as confidently old.
-//!   Nested symlink skips (`nested_skipped`) do not queue an entry by
-//!   themselves.
+//!   unknown activity), plus handoff blockers first: non-UTF-8 top-level names
+//!   (`non_utf8_skipped`), each carrying its losslessly Debug-escaped name.
+//!   Unknown entries are never ranked as confidently old. Nested symlink skips
+//!   (`nested_skipped`) do not queue an entry by themselves.
 //! - `issues`: bounded arbitrary sample of skipped/error notes in discovery
 //!   order; `issues_total`, `issues_by_reason`, and `issues_omitted` are the
 //!   authoritative counts. Only the sample is capped: counts cover every issue
@@ -322,6 +323,10 @@ struct Report {
     complete_entries: usize,
     incomplete_entries: usize,
     skipped_entries: usize,
+    /// Top-level names that are not valid UTF-8. They cannot appear in
+    /// `entries` (JSON paths must be UTF-8), so each one gets a review item
+    /// carrying its losslessly Debug-escaped name instead.
+    non_utf8_skipped: usize,
     entries: Vec<Entry>,
     review_queue_total: usize,
     review_queue: Vec<ReviewItem>,
@@ -670,6 +675,7 @@ fn scan(options: &Options) -> Result<Report> {
         complete_entries: 0,
         incomplete_entries: 0,
         skipped_entries: 0,
+        non_utf8_skipped: 0,
         entries: Vec::new(),
         review_queue_total: 0,
         review_queue: Vec::new(),
@@ -718,6 +724,7 @@ fn scan(options: &Options) -> Result<Report> {
     report.discovered_entries = names.len();
 
     let mut all: Vec<Entry> = Vec::with_capacity(names.len());
+    let mut blockers: Vec<ReviewItem> = Vec::new();
     for name in &names {
         let path = options.path.join(name);
         let Some(path_str) = path.to_str() else {
@@ -727,6 +734,16 @@ fn scan(options: &Options) -> Result<Report> {
                 format!("Skipped non-UTF-8 top-level path: {path:?}"),
             );
             report.skipped_entries += 1;
+            report.non_utf8_skipped += 1;
+            // The Debug escape (e.g. \xFF) is a lossless ASCII rendering of
+            // the raw name, so the identity survives even when the bounded
+            // issue sample is truncated or disabled.
+            blockers.push(ReviewItem {
+                path: options.path.clone(),
+                reason: format!(
+                    "non-UTF-8 top-level name {name:?}; excluded from entries, resolve with byte-level tooling"
+                ),
+            });
             continue;
         };
         let _ = path_str;
@@ -776,9 +793,12 @@ fn scan(options: &Options) -> Result<Report> {
         })
         .collect();
     review_queue.sort_by(|a, b| a.path.cmp(&b.path));
-    report.review_queue_total = review_queue.len();
-    review_queue.truncate(options.limit as usize);
-    report.review_queue = review_queue;
+    // Unresolved names are handoff blockers: they sort first so truncation by
+    // `--limit` cannot silently drop them while showing lesser items.
+    blockers.append(&mut review_queue);
+    report.review_queue_total = blockers.len();
+    blockers.truncate(options.limit as usize);
+    report.review_queue = blockers;
 
     // Age filters apply to newest observed activity and only to complete
     // entries with fully observed activity; everything else stays visible via
@@ -1163,11 +1183,19 @@ mod tests {
             let (root, _outside) = fixture();
             let raw = OsString::from_vec(b"bad-\xff-name".to_vec());
             fs::write(root.path().join(&raw), "x")?;
-            let opts = options(root.path().into());
+            let mut opts = options(root.path().into());
+            // Even with the issue sample disabled, the lossless identity and
+            // the count survive, and the blocker sorts before lesser items.
+            opts.max_issues = 0;
+            opts.limit = 1;
             let report = scan(&opts)?;
             assert!(!report.complete);
-            assert_eq!(report.issues_by_reason.get("non-UTF-8 path"), Some(&1));
-            assert_eq!(report.skipped_entries, 1);
+            assert_eq!(report.issues_total, 1);
+            assert_eq!(report.issues.len(), 0);
+            assert_eq!(report.non_utf8_skipped, 1);
+            assert_eq!(report.review_queue_total, 1);
+            assert_eq!(report.review_queue.len(), 1);
+            assert!(report.review_queue[0].reason.contains(r"bad-\xFF-name"));
             Ok(())
         }
 
