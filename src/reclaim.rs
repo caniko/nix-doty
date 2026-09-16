@@ -517,10 +517,7 @@ fn compute_target_free(mount: &MountInfo, config: &ReclaimConfig) -> u64 {
     target.saturating_sub(mount.available_bytes)
 }
 
-fn compute_health(
-    filesystems: &[ReclaimFilesystem],
-    threshold_pct: f64,
-) -> Vec<HealthEntry> {
+fn compute_health(filesystems: &[ReclaimFilesystem], threshold_pct: f64) -> Vec<HealthEntry> {
     filesystems
         .iter()
         .map(|fs| {
@@ -605,7 +602,8 @@ fn sort_report_targets(
 ) {
     for fs in filesystems {
         let mounts: Vec<&str> = fs.mounts.iter().map(|s| s.as_str()).collect();
-        fs.targets.sort_by(|a, b| target_sort_with_surfaces(a, b, &mounts));
+        fs.targets
+            .sort_by(|a, b| target_sort_with_surfaces(a, b, &mounts));
     }
     unassigned_targets.sort_by(target_sort);
 }
@@ -627,10 +625,7 @@ fn surface_priority(target: &ReclaimTarget, mounts: &[&str]) -> u8 {
     if target.scope != TargetScope::SingleSurface {
         return 1;
     }
-    let matches = target
-        .surfaces
-        .iter()
-        .any(|s| mounts.contains(&s.as_str()));
+    let matches = target.surfaces.iter().any(|s| mounts.contains(&s.as_str()));
     if matches { 0 } else { 1 }
 }
 
@@ -680,10 +675,7 @@ fn fs_key_from_report(fs: &ReclaimFilesystem) -> String {
             "{}\u{1f}{}\u{1f}{}\u{1f}{}",
             fs.device, fs.maj_min, fs.fstype, fsroot
         ),
-        None => format!(
-            "{}\u{1f}{}\u{1f}{}",
-            fs.device, fs.maj_min, fs.fstype
-        ),
+        None => format!("{}\u{1f}{}\u{1f}{}", fs.device, fs.maj_min, fs.fstype),
     }
 }
 
@@ -800,7 +792,9 @@ pub fn format_report_human(report: &ReclaimReport) -> String {
             } else {
                 output.push_str(&format!(
                     "  {} ({}): {:.1}% \u{2014} needs {} to drop below {:.0}%\n",
-                    h.device, mounts, h.usage_pct,
+                    h.device,
+                    mounts,
+                    h.usage_pct,
                     human_size(h.needed_bytes),
                     report.threshold_pct,
                 ));
