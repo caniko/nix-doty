@@ -1,3 +1,4 @@
+mod analyze;
 mod cli;
 mod commands;
 mod config;

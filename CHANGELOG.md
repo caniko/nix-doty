@@ -8,6 +8,7 @@
 - `canix-preflight-cache` target framework: size-cap cleanup for `~/.cache/canix/preflight` project caches
 - `purge-orphan-home-images` variant in `chessbender-state` target
 - `purge-backups` variant in `steampipe-state` target
+- `analyze opencode` read-only scratch analysis (Linux only): bounded top-level `--inventory` plus recursive subtree scans, `--sort oldest` review ordering with an explicit review queue, bounded issue samples with authoritative counts (schema version 2). Never reads contents, follows symlinks, or deletes anything
 
 ### Changed
 

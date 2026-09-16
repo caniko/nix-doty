@@ -15,6 +15,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Analyze agent scratch space without reading contents or deleting anything
+    Analyze {
+        #[command(subcommand)]
+        agent: crate::analyze::Agent,
+    },
     /// List all available cleanup frameworks and their variants
     List {
         /// Output as JSON
@@ -98,6 +103,7 @@ pub enum Command {
 impl Cli {
     pub fn run(self) -> Result<()> {
         match self.command {
+            Command::Analyze { agent } => agent.run(),
             Command::List { json } => crate::commands::list(json),
             Command::Status {
                 target,
