@@ -5,6 +5,7 @@ Cargo.lock.bak
 # Nix
 /result
 /result-*
+/.nix-results/
 /.direnv
 /.pre-commit-config.yaml
 
