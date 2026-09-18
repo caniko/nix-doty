@@ -52,10 +52,32 @@ fn empty_trash_dir(td: &str) -> (u64, u64) {
     let mut freed = 0u64;
     let files_dir = format!("{td}/files");
     if exec::path_exists(&files_dir) {
-        freed += exec::total_dir_size(&files_dir).unwrap_or(0);
         for entry in exec::read_dir(&files_dir).unwrap_or_default() {
-            let _ = exec::remove_dir_all(&entry);
-            removed += 1;
+            // Entries are plain files, directories, or symlinks. The old code
+            // ran remove_dir_all on everything and counted failures as
+            // removed, so plain files were silently kept while reported as
+            // freed. Branch on file type and only count successful removals.
+            let file_type = match std::fs::symlink_metadata(&entry) {
+                Ok(metadata) => metadata.file_type(),
+                Err(_) => continue,
+            };
+            // remove_file unlinks symlinks without following them.
+            let size = if file_type.is_dir() {
+                exec::total_dir_size(&entry).unwrap_or(0)
+            } else if file_type.is_file() {
+                exec::file_size(&entry).unwrap_or(0)
+            } else {
+                0
+            };
+            let outcome = if file_type.is_dir() {
+                exec::remove_dir_all(&entry)
+            } else {
+                exec::remove_file(&entry)
+            };
+            if outcome.is_ok() {
+                removed += 1;
+                freed = freed.saturating_add(size);
+            }
         }
     }
     let info_dir = format!("{td}/info");
@@ -144,4 +166,29 @@ fn fmt_bytes(bytes: u64) -> String {
         unit_idx += 1;
     }
     format!("{:.1} {}", size, UNITS[unit_idx])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // doty runs on Linux only; symlinks are part of the fixture.
+    #[cfg(unix)]
+    #[test]
+    fn empty_removes_files_dirs_and_symlinks_and_counts_honestly() {
+        let dir = tempfile::tempdir().unwrap();
+        let files_dir = dir.path().join("files");
+        std::fs::create_dir_all(files_dir.join("subdir")).unwrap();
+        std::fs::write(files_dir.join("big.bin"), vec![0u8; 4096]).unwrap();
+        std::fs::write(files_dir.join("subdir").join("inner.txt"), "inner").unwrap();
+        std::os::unix::fs::symlink("big.bin", files_dir.join("linked.bin")).unwrap();
+
+        let (removed, freed) = empty_trash_dir(&dir.path().display().to_string());
+
+        assert!(!files_dir.join("big.bin").exists());
+        assert!(!files_dir.join("subdir").exists());
+        assert!(std::fs::symlink_metadata(files_dir.join("linked.bin")).is_err());
+        assert_eq!(removed, 3);
+        assert!(freed >= 4096);
+    }
 }
