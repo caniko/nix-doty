@@ -21,6 +21,7 @@ pub static ALL_FRAMEWORKS: &[&dyn Framework] = &[
     crate::targets::STEAMPIPE_STATE,
     crate::targets::CHESSBENDER_STATE,
     crate::targets::OPENCODE_CACHE,
+    crate::targets::OPENCODE_SCRATCH,
     crate::targets::CANIX_PREFLIGHT_CACHE,
     crate::targets::USER_CACHE,
     crate::targets::FORGEJO_RUNNER_CACHE,
