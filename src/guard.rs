@@ -23,6 +23,12 @@ pub struct GuardedPath {
     pub dev: u64,
     pub ino: u64,
     pub is_dir: bool,
+    /// Byte size at guard time. Inode numbers can be recycled by the
+    /// filesystem after deletion, so dev+ino alone cannot prove a file was
+    /// not replaced; size+mtime make silent replacement detectable.
+    pub size: u64,
+    pub mtime_secs: i64,
+    pub mtime_nanos: u32,
 }
 
 /// Guard `path` for deletion under `allowed_root`.
@@ -125,14 +131,61 @@ pub fn guard_path(path: &Path, allowed_root: &Path) -> Result<GuardedPath> {
         dev: meta.dev(),
         ino: meta.ino(),
         is_dir: meta.is_dir(),
+        size: meta.len(),
+        mtime_secs: meta.mtime(),
+        mtime_nanos: meta.mtime_nsec() as u32,
     })
 }
 
-/// Re-validate a previously guarded path: same device, inode, and kind.
+/// Full identity tuple for raw metadata, for call sites (restore/purge)
+/// that check a path without building a [`GuardedPath`].
+pub fn identity_of(meta: &std::fs::Metadata) -> (u64, u64, bool, u64, i64, u32) {
+    (
+        meta.dev(),
+        meta.ino(),
+        meta.is_dir(),
+        meta.len(),
+        meta.mtime(),
+        meta.mtime_nsec() as u32,
+    )
+}
+
+/// Identity comparison with directory leniency: a directory's size/mtime
+/// change on any child mutation — benign scratch activity as well as
+/// attacks — so directories compare by object identity (dev/ino/kind) and
+/// rely on [`validate_tree`] (rm.rs) for content protection. Files compare
+/// the full identity: dev+ino alone is defeatable by inode recycling.
+pub fn same_identity(
+    dev: u64,
+    ino: u64,
+    is_dir: bool,
+    size: u64,
+    mtime_secs: i64,
+    mtime_nanos: u32,
+    recorded: &GuardedPath,
+) -> bool {
+    dev == recorded.dev
+        && ino == recorded.ino
+        && is_dir == recorded.is_dir
+        && (is_dir
+            || (size == recorded.size
+                && mtime_secs == recorded.mtime_secs
+                && mtime_nanos == recorded.mtime_nanos))
+}
+
+/// Re-validate a previously guarded path against its recorded identity.
 /// Returns the fresh guard on success.
 pub fn revalidate(guarded: &GuardedPath, allowed_root: &Path) -> Result<GuardedPath> {
     let fresh = guard_path(&guarded.path, allowed_root)?;
-    if fresh.dev != guarded.dev || fresh.ino != guarded.ino || fresh.is_dir != guarded.is_dir {
+    if !same_identity(
+        fresh.dev,
+        fresh.ino,
+        fresh.is_dir,
+        fresh.size,
+        fresh.mtime_secs,
+        fresh.mtime_nanos,
+        guarded,
+    ) {
         anyhow::bail!(
             "path identity changed since planning: {}",
             guarded.path.display()
@@ -227,7 +280,8 @@ mod tests {
         std::fs::write(&file, "v1")?;
         let guarded = guard_path(&file, root.path())?;
         std::fs::remove_file(&file)?;
-        std::fs::write(&file, "v2")?;
+        // Different size: detected even if the filesystem recycles the inode.
+        std::fs::write(&file, "v2-much-longer")?;
         let err = revalidate(&guarded, root.path()).unwrap_err();
         assert!(err.to_string().contains("identity changed"), "{err}");
         Ok(())

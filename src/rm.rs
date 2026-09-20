@@ -57,12 +57,46 @@ pub struct PlannedTarget {
     pub dev: u64,
     pub ino: u64,
     pub is_dir: bool,
+    /// Size and mtime at plan time (see [`GuardedPath`]: inodes recycle).
+    /// Defaults keep plans written before this field existed loadable;
+    /// such plans compare size/mtime 0 and fail closed on first use.
+    #[serde(default)]
+    pub size: u64,
+    #[serde(default)]
+    pub mtime_secs: i64,
+    #[serde(default)]
+    pub mtime_nanos: u32,
     #[serde(default)]
     pub quarantined_as: Option<PathBuf>,
     #[serde(default)]
     pub restored: bool,
     #[serde(default)]
     pub purged: bool,
+}
+
+fn recorded_guard(target: &PlannedTarget) -> GuardedPath {
+    GuardedPath {
+        path: target.path.clone(),
+        dev: target.dev,
+        ino: target.ino,
+        is_dir: target.is_dir,
+        size: target.size,
+        mtime_secs: target.mtime_secs,
+        mtime_nanos: target.mtime_nanos,
+    }
+}
+
+fn metadata_matches(meta: &std::fs::Metadata, target: &PlannedTarget) -> bool {
+    let (dev, ino, is_dir, size, mtime_secs, mtime_nanos) = guard::identity_of(meta);
+    guard::same_identity(
+        dev,
+        ino,
+        is_dir,
+        size,
+        mtime_secs,
+        mtime_nanos,
+        &recorded_guard(target),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -236,6 +270,9 @@ pub fn plan_removal(root: &Path, targets: &[PathBuf]) -> Result<RmPreview> {
             dev: guarded.dev,
             ino: guarded.ino,
             is_dir: guarded.is_dir,
+            size: guarded.size,
+            mtime_secs: guarded.mtime_secs,
+            mtime_nanos: guarded.mtime_nanos,
             quarantined_as: None,
             restored: false,
             purged: false,
@@ -310,7 +347,7 @@ pub fn apply_plan(id: &str) -> Result<RmPlan> {
                     target.path.display()
                 )
             })?;
-            if meta.dev() != target.dev || meta.ino() != target.ino {
+            if !metadata_matches(&meta, target) {
                 anyhow::bail!(
                     "quarantined entry identity changed: {} (plan {id} cannot resume)",
                     destination.display()
@@ -324,12 +361,7 @@ pub fn apply_plan(id: &str) -> Result<RmPlan> {
                 target.path.display()
             );
         }
-        let guarded = GuardedPath {
-            path: target.path.clone(),
-            dev: target.dev,
-            ino: target.ino,
-            is_dir: target.is_dir,
-        };
+        let guarded = recorded_guard(target);
         guard::revalidate(&guarded, &plan.root)?;
         pending.push(index);
     }
@@ -382,7 +414,7 @@ pub fn restore(id: &str) -> Result<RmPlan> {
         // The quarantined entry must still be the same object we moved.
         let meta = std::fs::symlink_metadata(destination)
             .with_context(|| format!("quarantined entry missing: {}", destination.display()))?;
-        if meta.dev() != target.dev || meta.ino() != target.ino {
+        if !metadata_matches(&meta, target) {
             anyhow::bail!(
                 "quarantined entry identity changed: {}",
                 destination.display()
@@ -450,7 +482,7 @@ pub fn purge_apply(id: &str) -> Result<RmPlan> {
         };
         let meta = std::fs::symlink_metadata(destination)
             .with_context(|| format!("quarantined entry missing: {}", destination.display()))?;
-        if meta.dev() != target.dev || meta.ino() != target.ino {
+        if !metadata_matches(&meta, target) {
             anyhow::bail!(
                 "quarantined entry identity changed: {}",
                 destination.display()
@@ -477,7 +509,7 @@ pub fn purge_apply(id: &str) -> Result<RmPlan> {
         // check bracket the batch, but entries are removed one by one.
         let meta = std::fs::symlink_metadata(&destination)
             .with_context(|| format!("quarantined entry missing: {}", destination.display()))?;
-        if meta.dev() != expected.dev || meta.ino() != expected.ino {
+        if !metadata_matches(&meta, &expected) {
             anyhow::bail!(
                 "quarantined entry identity changed: {}",
                 destination.display()
@@ -599,7 +631,8 @@ mod tests {
         std::fs::write(&file, "v1").unwrap();
         let preview = plan_removal(root.path(), std::slice::from_ref(&file)).unwrap();
         std::fs::remove_file(&file).unwrap();
-        std::fs::write(&file, "v2").unwrap();
+        // Different size: detected even if the filesystem recycles the inode.
+        std::fs::write(&file, "v2-much-longer").unwrap();
         let err = apply_plan(&preview.id).unwrap_err();
         assert!(err.to_string().contains("identity changed"), "{err}");
     }
