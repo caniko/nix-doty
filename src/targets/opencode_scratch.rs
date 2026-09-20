@@ -254,9 +254,9 @@ fn inspection(
         age_oldest_days: oldest,
         would_remove: count,
         notes: format!(
-            "{count} allowlisted scratch entries ({}){tail}",
+            "{count} allowlisted scratch entries ({}){bounded_note}{}",
             fmt_bytes(bytes),
-            tail = format!("{bounded_note}{}", skipped_note(skipped)),
+            skipped_note(skipped),
         ),
     }
 }

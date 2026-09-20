@@ -519,8 +519,9 @@ pub fn rm(
             anyhow::bail!("pass either --plan or target paths, not both");
         }
         if !apply {
-            let preview = crate::rm::purge_preview(id)?;
-            print_rm_plan(&preview, false, json)?;
+            let recorded = crate::rm::describe_plan(id)?;
+            print_rm_plan(&recorded, false, json)?;
+            println!("Review, then run: doty rm --apply --plan {id}");
             return Ok(());
         }
         let applied = crate::rm::apply_plan(id)?;

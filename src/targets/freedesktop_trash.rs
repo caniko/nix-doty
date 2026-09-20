@@ -1,6 +1,6 @@
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 fn trash_dirs() -> Vec<String> {
     let mut dirs = Vec::new();
@@ -61,7 +61,8 @@ fn empty_trash_dir(td: &str) -> (u64, u64) {
                 Ok(metadata) => metadata.file_type(),
                 Err(_) => continue,
             };
-            // remove_file unlinks symlinks without following them.
+            // exec::remove_file refuses symlinks by policy; unlinking a
+            // link never follows it, so trash links are unlinked here.
             let size = if file_type.is_dir() {
                 exec::total_dir_size(&entry).unwrap_or(0)
             } else if file_type.is_file() {
@@ -69,8 +70,10 @@ fn empty_trash_dir(td: &str) -> (u64, u64) {
             } else {
                 0
             };
-            let outcome = if file_type.is_dir() {
+            let outcome: Result<()> = if file_type.is_dir() {
                 exec::remove_dir_all(&entry)
+            } else if file_type.is_symlink() {
+                std::fs::remove_file(&entry).with_context(|| format!("failed to unlink {entry}"))
             } else {
                 exec::remove_file(&entry)
             };
