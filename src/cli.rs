@@ -71,7 +71,7 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
-        /// Remove scratch paths via a guarded plan (dry-run preview by default)
+    /// Remove scratch paths via a guarded plan (dry-run preview by default)
     Rm {
         /// Allowed root all targets must live under
         #[arg(long, default_value = crate::rm::DEFAULT_SCRATCH_ROOT)]
@@ -111,7 +111,8 @@ pub enum Command {
         json: bool,
     },
     /// Reclaim disk space on full mounts (dry-run by default)
-    Reclaim {        /// Only plan/reclaim for specific mount point
+    Reclaim {
+        /// Only plan/reclaim for specific mount point
         #[arg(short, long, value_name = "MOUNT")]
         mount: Option<String>,
         /// Usage threshold percentage (default: 85)

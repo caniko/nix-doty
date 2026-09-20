@@ -100,7 +100,10 @@ fn resolve_entry(root: &Path, rel: &str, want_dir: bool) -> Result<PathBuf, Skip
             reason: "not a relative path",
         });
     }
-    if rel_path.components().any(|c| matches!(c, Component::ParentDir)) {
+    if rel_path
+        .components()
+        .any(|c| matches!(c, Component::ParentDir))
+    {
         return Err(Skipped {
             path: rel.to_string(),
             reason: "escapes the scratch root",
@@ -395,8 +398,13 @@ mod tests {
 
     fn fixture() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();
-        fs::create_dir_all(dir.path().join("amc-target").join("debug").join(".fingerprint"))
-            .unwrap();
+        fs::create_dir_all(
+            dir.path()
+                .join("amc-target")
+                .join("debug")
+                .join(".fingerprint"),
+        )
+        .unwrap();
         fs::write(dir.path().join("amc-target").join("CACHEDIR.TAG"), "tag").unwrap();
         fs::write(dir.path().join("amc-target").join("junk.bin"), "junk").unwrap();
         fs::create_dir_all(dir.path().join("nested").join("target")).unwrap();
@@ -452,10 +460,7 @@ mod tests {
         assert!(dir.path().join("notes.txt").exists());
         assert!(dir.path().join("unlisted.txt").exists());
         assert!(
-            report
-                .errors
-                .iter()
-                .any(|e| e.contains("no CACHEDIR.TAG")),
+            report.errors.iter().any(|e| e.contains("no CACHEDIR.TAG")),
             "unproven dir must be reported, got: {:?}",
             report.errors
         );
@@ -533,7 +538,9 @@ mod tests {
             );
         }
         assert_eq!(
-            resolve_entry(dir.path(), "../outside", true).unwrap_err().reason,
+            resolve_entry(dir.path(), "../outside", true)
+                .unwrap_err()
+                .reason,
             "escapes the scratch root"
         );
         assert_eq!(
@@ -544,7 +551,9 @@ mod tests {
         );
         #[cfg(unix)]
         assert_eq!(
-            resolve_entry(dir.path(), "linked", true).unwrap_err().reason,
+            resolve_entry(dir.path(), "linked", true)
+                .unwrap_err()
+                .reason,
             "symlink (never followed)"
         );
     }

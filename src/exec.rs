@@ -60,8 +60,7 @@ pub fn read_dir(path: &str) -> Result<Vec<String>> {
 pub fn remove_file(path: &str) -> Result<()> {
     // Never remove through a symlink or special file: callers pass cache
     // entries, not links. Full policy checks live in guard::guard_path.
-    let meta = std::fs::symlink_metadata(path)
-        .with_context(|| format!("failed to stat {path}"))?;
+    let meta = std::fs::symlink_metadata(path).with_context(|| format!("failed to stat {path}"))?;
     if meta.file_type().is_symlink() {
         anyhow::bail!("refusing to remove symlink: {path}");
     }
@@ -75,8 +74,7 @@ pub fn remove_dir_all(path: &str) -> Result<()> {
     // Same as remove_file: refuse symlinks and non-directories up front.
     // Contents are the caller's responsibility; prefer guard::guard_path
     // plus the rm quarantine flow for anything not strictly cache-shaped.
-    let meta = std::fs::symlink_metadata(path)
-        .with_context(|| format!("failed to stat {path}"))?;
+    let meta = std::fs::symlink_metadata(path).with_context(|| format!("failed to stat {path}"))?;
     if meta.file_type().is_symlink() {
         anyhow::bail!("refusing to remove symlink: {path}");
     }
@@ -287,8 +285,7 @@ mod tests {
         std::fs::write(&stale, "old").unwrap();
         set_mtime(&stale, old);
         set_mtime(dir.path(), old);
-        let (removed, _) =
-            remove_stale_entries(dir.path().to_str().unwrap(), 30, 2).unwrap();
+        let (removed, _) = remove_stale_entries(dir.path().to_str().unwrap(), 30, 2).unwrap();
         assert!(victim.exists());
         assert!(!stale.exists());
         assert_eq!(removed, 1);

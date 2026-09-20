@@ -112,10 +112,7 @@ pub fn guard_path(path: &Path, allowed_root: &Path) -> Result<GuardedPath> {
             anyhow::bail!("refusing protected path: {}", candidate.display());
         }
         if dir.join(".git").exists() {
-            anyhow::bail!(
-                "refusing git repository content: {}",
-                candidate.display()
-            );
+            anyhow::bail!("refusing git repository content: {}", candidate.display());
         }
         if dir == root {
             break;

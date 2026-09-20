@@ -487,7 +487,8 @@ pub fn reclaim(
     Ok(())
 }
 
-fn human_size(bytes: u64) -> String {    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+fn human_size(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut size = bytes as f64;
     let mut unit_idx = 0;
     while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
@@ -573,11 +574,7 @@ fn print_rm_plan(plan: &crate::rm::RmPlan, applied: bool, json: bool) -> Result<
     println!("Removal plan {} ({verb}):", plan.id);
     for target in &plan.targets {
         match (&target.quarantined_as, target.restored, target.purged) {
-            (Some(dest), _, _) => println!(
-                "  {} -> {}",
-                target.path.display(),
-                dest.display()
-            ),
+            (Some(dest), _, _) => println!("  {} -> {}", target.path.display(), dest.display()),
             (None, true, _) => println!("  {} (restored)", target.path.display()),
             (None, _, true) => println!("  {} (purged)", target.path.display()),
             (None, false, false) => println!("  {} (pending)", target.path.display()),
