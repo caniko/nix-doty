@@ -2,6 +2,7 @@ use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 use crate::config::{self, ConfiguredTarget};
 use crate::framework::{ApplyReport, Inspection, Tier};
@@ -486,8 +487,7 @@ pub fn reclaim(
     Ok(())
 }
 
-fn human_size(bytes: u64) -> String {
-    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
+fn human_size(bytes: u64) -> String {    const UNITS: &[&str] = &["B", "KiB", "MiB", "GiB", "TiB"];
     let mut size = bytes as f64;
     let mut unit_idx = 0;
     while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
@@ -495,4 +495,112 @@ fn human_size(bytes: u64) -> String {
         unit_idx += 1;
     }
     format!("{:.1} {}", size, UNITS[unit_idx])
+}
+
+#[derive(Serialize)]
+struct RmPreviewOutput {
+    id: String,
+    root: std::path::PathBuf,
+    targets: Vec<std::path::PathBuf>,
+    applied: bool,
+}
+
+/// Plan guarded scratch removal, or apply a recorded plan by id.
+pub fn rm(
+    root: &str,
+    apply: bool,
+    plan: Option<&str>,
+    targets: &[String],
+    json: bool,
+) -> Result<()> {
+    use std::path::PathBuf;
+    if let Some(id) = plan {
+        if !targets.is_empty() {
+            anyhow::bail!("pass either --plan or target paths, not both");
+        }
+        if !apply {
+            let preview = crate::rm::purge_preview(id)?;
+            print_rm_plan(&preview, false, json)?;
+            return Ok(());
+        }
+        let applied = crate::rm::apply_plan(id)?;
+        print_rm_plan(&applied, true, json)?;
+        return Ok(());
+    }
+    if targets.is_empty() {
+        anyhow::bail!("no removal targets given (or pass --plan <id>)");
+    }
+    let paths: Vec<PathBuf> = targets.iter().map(PathBuf::from).collect();
+    let preview = crate::rm::plan_removal(Path::new(root), &paths)?;
+    if !apply {
+        print_rm_plan_preview(&preview, json)?;
+        return Ok(());
+    }
+    let applied = crate::rm::apply_plan(&preview.id)?;
+    print_rm_plan(&applied, true, json)?;
+    Ok(())
+}
+
+fn print_rm_plan_preview(preview: &crate::rm::RmPreview, json: bool) -> Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&RmPreviewOutput {
+                id: preview.id.clone(),
+                root: preview.root.clone(),
+                targets: preview.targets.clone(),
+                applied: false,
+            })?
+        );
+        return Ok(());
+    }
+    println!("Removal plan {} (dry-run, nothing moved):", preview.id);
+    println!("  root: {}", preview.root.display());
+    for target in &preview.targets {
+        println!("  quarantine candidate: {}", target.display());
+    }
+    println!("Review, then run: doty rm --apply --plan {}", preview.id);
+    Ok(())
+}
+
+fn print_rm_plan(plan: &crate::rm::RmPlan, applied: bool, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&plan)?);
+        return Ok(());
+    }
+    let verb = if applied { "quarantined" } else { "recorded" };
+    println!("Removal plan {} ({verb}):", plan.id);
+    for target in &plan.targets {
+        match (&target.quarantined_as, target.restored, target.purged) {
+            (Some(dest), _, _) => println!(
+                "  {} -> {}",
+                target.path.display(),
+                dest.display()
+            ),
+            (None, true, _) => println!("  {} (restored)", target.path.display()),
+            (None, _, true) => println!("  {} (purged)", target.path.display()),
+            (None, false, false) => println!("  {} (pending)", target.path.display()),
+        }
+    }
+    Ok(())
+}
+
+/// Restore quarantined entries for a removal plan.
+pub fn restore(plan: &str, json: bool) -> Result<()> {
+    let restored = crate::rm::restore(plan)?;
+    print_rm_plan(&restored, false, json)?;
+    Ok(())
+}
+
+/// Preview or apply permanent purge for a quarantined removal plan.
+pub fn purge(plan: &str, apply: bool, json: bool) -> Result<()> {
+    if !apply {
+        let preview = crate::rm::purge_preview(plan)?;
+        print_rm_plan(&preview, false, json)?;
+        println!("Review, then run: doty purge --apply {plan}");
+        return Ok(());
+    }
+    let purged = crate::rm::purge_apply(plan)?;
+    print_rm_plan(&purged, false, json)?;
+    Ok(())
 }

@@ -71,9 +71,47 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+        /// Remove scratch paths via a guarded plan (dry-run preview by default)
+    Rm {
+        /// Allowed root all targets must live under
+        #[arg(long, default_value = crate::rm::DEFAULT_SCRATCH_ROOT)]
+        root: String,
+        /// Actually quarantine (default only plans)
+        #[arg(long)]
+        apply: bool,
+        /// Apply a previously created plan by id
+        #[arg(long, value_name = "PLAN_ID")]
+        plan: Option<String>,
+        /// Exact target paths (required unless --plan is given)
+        #[arg(last = true, value_name = "PATH")]
+        targets: Vec<String>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore quarantined entries from a removal plan
+    Restore {
+        /// Removal plan id to restore
+        #[arg(value_name = "PLAN_ID")]
+        plan: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// Permanently purge quarantined entries (separate approval required)
+    Purge {
+        /// Removal plan id to purge
+        #[arg(value_name = "PLAN_ID")]
+        plan: String,
+        /// Actually purge (default only previews)
+        #[arg(long)]
+        apply: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Reclaim disk space on full mounts (dry-run by default)
-    Reclaim {
-        /// Only plan/reclaim for specific mount point
+    Reclaim {        /// Only plan/reclaim for specific mount point
         #[arg(short, long, value_name = "MOUNT")]
         mount: Option<String>,
         /// Usage threshold percentage (default: 85)
@@ -120,6 +158,15 @@ impl Cli {
                 json,
             } => crate::commands::run(target, variant, &config, apply, force, json),
             Command::Doctor { config, json } => crate::commands::doctor(&config, json),
+            Command::Rm {
+                root,
+                apply,
+                plan,
+                targets,
+                json,
+            } => crate::commands::rm(&root, apply, plan.as_deref(), &targets, json),
+            Command::Restore { plan, json } => crate::commands::restore(&plan, json),
+            Command::Purge { plan, apply, json } => crate::commands::purge(&plan, apply, json),
             Command::Reclaim {
                 mount,
                 threshold,

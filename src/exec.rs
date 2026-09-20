@@ -58,10 +58,31 @@ pub fn read_dir(path: &str) -> Result<Vec<String>> {
 }
 
 pub fn remove_file(path: &str) -> Result<()> {
+    // Never remove through a symlink or special file: callers pass cache
+    // entries, not links. Full policy checks live in guard::guard_path.
+    let meta = std::fs::symlink_metadata(path)
+        .with_context(|| format!("failed to stat {path}"))?;
+    if meta.file_type().is_symlink() {
+        anyhow::bail!("refusing to remove symlink: {path}");
+    }
+    if !meta.is_file() {
+        anyhow::bail!("refusing to remove non-file: {path}");
+    }
     std::fs::remove_file(path).with_context(|| format!("failed to remove {path}"))
 }
 
 pub fn remove_dir_all(path: &str) -> Result<()> {
+    // Same as remove_file: refuse symlinks and non-directories up front.
+    // Contents are the caller's responsibility; prefer guard::guard_path
+    // plus the rm quarantine flow for anything not strictly cache-shaped.
+    let meta = std::fs::symlink_metadata(path)
+        .with_context(|| format!("failed to stat {path}"))?;
+    if meta.file_type().is_symlink() {
+        anyhow::bail!("refusing to remove symlink: {path}");
+    }
+    if !meta.is_dir() {
+        anyhow::bail!("refusing to remove non-directory: {path}");
+    }
     std::fs::remove_dir_all(path).with_context(|| format!("failed to remove directory {path}"))
 }
 
@@ -190,6 +211,15 @@ fn remove_stale_inner(
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        // Never follow or delete symlinks and special files: age-based
+        // pruning must not traverse somewhere the mtime did not vouch for.
+        let file_type = entry.file_type()?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if !file_type.is_dir() && !file_type.is_file() {
+            continue;
+        }
         let metadata = entry.metadata()?;
         let modified = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
         let age: chrono::DateTime<chrono::Utc> = modified.into();
@@ -212,4 +242,68 @@ fn remove_stale_inner(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remove_file_refuses_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("real.txt");
+        std::fs::write(&real, "data").unwrap();
+        let link = dir.path().join("link.txt");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let err = remove_file(link.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(real.exists());
+    }
+
+    #[test]
+    fn remove_dir_all_refuses_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let real = dir.path().join("real");
+        std::fs::create_dir(&real).unwrap();
+        std::fs::write(real.join("inner.txt"), "data").unwrap();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let err = remove_dir_all(link.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains("symlink"), "{err}");
+        assert!(real.join("inner.txt").exists());
+    }
+
+    #[test]
+    fn remove_stale_entries_skips_symlinks() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside");
+        let victim = outside.path().join("keep.txt");
+        std::fs::write(&victim, "data").unwrap();
+        // Backdate everything well past the cutoff.
+        let old = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 86400);
+        std::os::unix::fs::symlink(&victim, dir.path().join("link.txt")).unwrap();
+        set_mtime(&dir.path().join("link.txt"), old);
+        let stale = dir.path().join("stale.txt");
+        std::fs::write(&stale, "old").unwrap();
+        set_mtime(&stale, old);
+        set_mtime(dir.path(), old);
+        let (removed, _) =
+            remove_stale_entries(dir.path().to_str().unwrap(), 30, 2).unwrap();
+        assert!(victim.exists());
+        assert!(!stale.exists());
+        assert_eq!(removed, 1);
+    }
+
+    fn set_mtime(path: &Path, modified: std::time::SystemTime) {
+        // filetime-equivalent via libc utimensat through std: fall back to
+        // touching with a subprocess-free approach is unavailable, so use
+        // the `touch -d` helper present on this host.
+        let secs = modified
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let _ = std::process::Command::new("touch")
+            .args(["-d", &format!("@{secs}"), &path.to_string_lossy()])
+            .status();
+    }
 }

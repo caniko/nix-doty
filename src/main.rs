@@ -4,9 +4,11 @@ mod commands;
 mod config;
 mod exec;
 pub mod framework;
+pub mod guard;
 pub mod mount;
 pub mod reclaim;
 pub mod registry;
+pub mod rm;
 pub mod targets;
 
 fn main() -> anyhow::Result<()> {
