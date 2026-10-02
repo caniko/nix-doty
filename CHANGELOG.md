@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Nix builds provide Git and Linux mount inspection for retention tests and
+  pin these tools in the installed runtime wrapper.
+
 ### Added
 
 - Chaosbox scratch-ledger integration for analysis, quarantine and purge, with

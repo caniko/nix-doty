@@ -45,12 +45,18 @@
         commonArgs = {
           src = craneLib.cleanCargoSource ./.;
           strictDeps = true;
+          nativeBuildInputs = [pkgs.gitMinimal] ++ lib.optionals pkgs.stdenv.isLinux [pkgs.util-linux];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
         defaultPackage = craneLib.buildPackage (commonArgs
           // {
             inherit cargoArtifacts;
+            nativeBuildInputs = commonArgs.nativeBuildInputs ++ [pkgs.makeWrapper];
+            postInstall = ''
+              wrapProgram "$out/bin/doty" \
+                --prefix PATH : ${lib.makeBinPath commonArgs.nativeBuildInputs}
+            '';
             meta = {
               mainProgram = "doty";
               description = "Do That Yourself: NixOS cleanup orchestrator";
