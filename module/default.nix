@@ -1,30 +1,32 @@
-{ lib, config, pkgs, ... }:
-
-let
+{
+  lib,
+  config,
+  pkgs,
+  ...
+}: let
   cfg = config.services.doty;
-  entriesForTarget =
-    name: t:
-      if t.variants != [] then
-        map (v: {
-          inherit name;
-          variant = v.variant;
-          settings = v.settings or {};
-        }) t.variants
-      else
-        [
-          {
-            inherit name;
-            variant = t.variant;
-            settings = t.settings;
-          }
-        ];
-  targetEntries =
-    lib.flatten (
-      lib.mapAttrsToList (
-        name: t:
-          entriesForTarget name t
-      ) (lib.filterAttrs (n: t: t.enable) cfg.targets)
-    );
+  entriesForTarget = name: t:
+    if t.variants != []
+    then
+      map (v: {
+        inherit name;
+        inherit (v) variant;
+        settings = v.settings or {};
+      })
+      t.variants
+    else [
+      {
+        inherit name;
+        inherit (t) variant;
+        inherit (t) settings;
+      }
+    ];
+  targetEntries = lib.flatten (
+    lib.mapAttrsToList (
+      name: t:
+        entriesForTarget name t
+    ) (lib.filterAttrs (_n: t: t.enable) cfg.targets)
+  );
   targetsJson = pkgs.writeText "doty-targets.json" (builtins.toJSON {
     targets = targetEntries;
   });
@@ -84,9 +86,9 @@ in {
     assertions = lib.mapAttrsToList (name: t: {
       assertion = t.variants != [] || t.variant != null;
       message = "services.doty.targets.${name} must set either variant or variants";
-    }) (lib.filterAttrs (n: t: t.enable) cfg.targets);
+    }) (lib.filterAttrs (_n: t: t.enable) cfg.targets);
 
-    environment.systemPackages = [ cfg.package ];
+    environment.systemPackages = [cfg.package];
     environment.etc."doty/targets.json".source = targetsJson;
 
     systemd.services.doty-all = {
@@ -100,7 +102,7 @@ in {
 
     systemd.timers.doty-all = {
       description = "doty: weekly cleanup of all targets";
-      wantedBy = [ "timers.target" ];
+      wantedBy = ["timers.target"];
       timerConfig = {
         OnCalendar = cfg.schedule;
         Persistent = true;
