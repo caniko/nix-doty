@@ -4,6 +4,13 @@
 
 ### Added
 
+- Chaosbox scratch-ledger integration for analysis, quarantine and purge, with
+  bounded refreshes and explicit release checks that preserve unfinished work.
+- Managed-model inventory reconciles download receipts with lifecycle,
+  retention and consumer pins; retired models require a shared producer lock
+  before removal.
+- Persistent retention targets: `cargo-builds` (incremental or whole-target retention), `package-caches`, `model-directories` (explicit retirement and pins), and `retained-state` (approved quarantine with separate purge). Descendant-age, bounded scans, process references and journaled contained removal protect candidates. See `docs/persistent-retention.md`.
+- Flake `lib.persistentRetention` capability for downstream target gating.
 - `tmp-stale` target framework: purge stale `/tmp/nix-shell.*` and canix-preflight temp directories
 - `canix-preflight-cache` target framework: size-cap cleanup for `~/.cache/canix/preflight` project caches
 - `purge-orphan-home-images` variant in `chessbender-state` target

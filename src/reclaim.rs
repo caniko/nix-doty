@@ -61,6 +61,8 @@ pub struct ReclaimFilesystem {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ReclaimTarget {
+    #[serde(skip)]
+    settings: serde_json::Value,
     pub framework: &'static str,
     pub variant: &'static str,
     pub tier: &'static str,
@@ -84,6 +86,7 @@ pub enum TargetScope {
 
 #[derive(Debug, Clone)]
 pub struct ReclaimConfig {
+    pub config_path: String,
     pub mount: Option<String>,
     pub threshold_pct: f64,
     pub min_free_bytes: Option<u64>,
@@ -97,6 +100,7 @@ pub struct ReclaimConfig {
 impl Default for ReclaimConfig {
     fn default() -> Self {
         Self {
+            config_path: crate::config::DEFAULT_CONFIG_PATH.into(),
             mount: None,
             threshold_pct: 85.0,
             min_free_bytes: None,
@@ -125,6 +129,16 @@ struct ResolvedTarget {
 }
 
 pub fn plan(config: &ReclaimConfig) -> Result<ReclaimReport> {
+    anyhow::ensure!(
+        config.threshold_pct.is_finite() && (0.0..=100.0).contains(&config.threshold_pct),
+        "threshold must be between 0 and 100"
+    );
+    anyhow::ensure!(
+        config
+            .min_free_pct
+            .is_none_or(|pct| pct.is_finite() && (0.0..=100.0).contains(&pct)),
+        "minimum free percentage must be between 0 and 100"
+    );
     let all_mounts = mount::read_mounts()?;
     let groups = filesystem_groups(&all_mounts);
     let selected_keys = selected_filesystem_keys(config, &groups)?;
@@ -223,6 +237,7 @@ pub fn execute(report: &mut ReclaimReport, config: &ReclaimConfig) -> Result<()>
     report.totals = compute_totals(&report.filesystems, &report.unassigned_targets);
     report.totals.total_actual_freed_bytes = Some(total_freed);
 
+    report.health = compute_health(&report.filesystems, config.threshold_pct);
     Ok(())
 }
 
@@ -240,7 +255,7 @@ fn execute_target(target: &mut ReclaimTarget, config: &ReclaimConfig) -> Result<
         }
     };
 
-    if !config.force {
+    if !config.force || variant.tier() == Tier::ReportOnly {
         match variant.tier() {
             Tier::Confirm => {
                 target.status = "skipped";
@@ -261,7 +276,7 @@ fn execute_target(target: &mut ReclaimTarget, config: &ReclaimConfig) -> Result<
         }
     }
 
-    match variant.apply(true, config.force) {
+    match variant.apply_with_settings(true, config.force, &target.settings) {
         Ok(apply_report) => {
             target.actual_freed_bytes = Some(apply_report.freed_bytes);
             target.status = if apply_report.errors.is_empty() {
@@ -388,77 +403,87 @@ fn inspect_targets(
 ) -> Result<Vec<ResolvedTarget>> {
     let mut targets = Vec::new();
 
-    for framework in registry::ALL_FRAMEWORKS {
-        for variant in framework.variants() {
-            let tier = variant.tier();
-            let mut skip_reason = None;
-            let mut status = "pending";
-            if !config.force {
-                match tier {
-                    Tier::Confirm => {
-                        status = "skipped";
-                        skip_reason = Some("confirm tier requires --force".to_string());
-                    }
-                    Tier::Risky => {
-                        status = "skipped";
-                        skip_reason = Some("risky tier requires --force".to_string());
-                    }
-                    Tier::ReportOnly => {
-                        status = "skipped";
-                        skip_reason = Some("report-only target".to_string());
-                    }
-                    Tier::Safe => {}
+    for selected in crate::commands::select_variants(None, None, &config.config_path)? {
+        let variant = selected.variant;
+        let tier = variant.tier();
+        let mut skip_reason = None;
+        let mut status = "pending";
+        if !config.force || tier == Tier::ReportOnly {
+            match tier {
+                Tier::Confirm => {
+                    status = "skipped";
+                    skip_reason = Some("confirm tier requires --force".to_string());
                 }
-            }
-
-            let inspection = match variant.inspect() {
-                Ok(i) => i,
-                Err(_) => continue,
-            };
-
-            if inspection.would_remove == 0 && inspection.size_bytes.unwrap_or(0) == 0 {
-                continue;
-            }
-
-            let paths = target_paths(&inspection.path);
-            let mut filesystem_keys = BTreeSet::new();
-            let mut surfaces = BTreeSet::new();
-            for path in &paths {
-                if let Some((key, surface)) = resolve_path_surface(path, groups) {
-                    filesystem_keys.insert(key);
-                    surfaces.insert(surface);
+                Tier::Risky => {
+                    status = "skipped";
+                    skip_reason = Some("risky tier requires --force".to_string());
                 }
+                Tier::ReportOnly => {
+                    status = "skipped";
+                    skip_reason = Some("report-only target".to_string());
+                }
+                Tier::Safe => {}
             }
-
-            let scope = match filesystem_keys.len() {
-                0 => TargetScope::Unassigned,
-                1 => TargetScope::SingleSurface,
-                _ => TargetScope::MultiSurface,
-            };
-
-            let target = ReclaimTarget {
-                framework: variant.framework().name(),
-                variant: variant.name(),
-                tier: tier_label(tier),
-                scope,
-                paths: if paths.is_empty() {
-                    vec![inspection.path.clone()]
-                } else {
-                    paths
-                },
-                surfaces: surfaces.into_iter().collect(),
-                estimated_freed_bytes: inspection.size_bytes.unwrap_or(0),
-                actual_freed_bytes: None,
-                status,
-                skip_reason,
-                notes: inspection.notes,
-            };
-
-            targets.push(ResolvedTarget {
-                target,
-                filesystem_keys: filesystem_keys.into_iter().collect(),
-            });
         }
+
+        let inspection = match variant.inspect_with_settings(&selected.settings) {
+            Ok(i) => i,
+            Err(error) => {
+                anyhow::bail!(
+                    "{}/{} inspection failed: {error:#}",
+                    variant.framework().name(),
+                    variant.name()
+                );
+            }
+        };
+
+        if inspection.would_remove == 0 && inspection.size_bytes.unwrap_or(0) == 0 {
+            continue;
+        }
+
+        let paths = target_paths(&inspection.path);
+        let mut filesystem_keys = BTreeSet::new();
+        let mut surfaces = BTreeSet::new();
+        for path in &paths {
+            if let Some((key, surface)) = resolve_path_surface(path, groups) {
+                filesystem_keys.insert(key);
+                surfaces.insert(surface);
+            }
+        }
+
+        let scope = match filesystem_keys.len() {
+            0 => TargetScope::Unassigned,
+            1 => TargetScope::SingleSurface,
+            _ => TargetScope::MultiSurface,
+        };
+
+        let target = ReclaimTarget {
+            settings: selected.settings,
+            framework: variant.framework().name(),
+            variant: variant.name(),
+            tier: tier_label(tier),
+            scope,
+            paths: if paths.is_empty() {
+                vec![inspection.path.clone()]
+            } else {
+                paths
+            },
+            surfaces: surfaces.into_iter().collect(),
+            estimated_freed_bytes: if tier == Tier::ReportOnly {
+                0
+            } else {
+                inspection.size_bytes.unwrap_or(0)
+            },
+            actual_freed_bytes: None,
+            status,
+            skip_reason,
+            notes: inspection.notes,
+        };
+
+        targets.push(ResolvedTarget {
+            target,
+            filesystem_keys: filesystem_keys.into_iter().collect(),
+        });
     }
 
     Ok(targets)
@@ -513,7 +538,7 @@ fn compute_target_free(mount: &MountInfo, config: &ReclaimConfig) -> u64 {
         return target.saturating_sub(mount.available_bytes);
     }
 
-    let target = (mount.total_bytes as f64 * 0.10) as u64;
+    let target = (mount.total_bytes as f64 * (100.0 - config.threshold_pct) / 100.0) as u64;
     target.saturating_sub(mount.available_bytes)
 }
 
@@ -522,11 +547,12 @@ fn compute_health(filesystems: &[ReclaimFilesystem], threshold_pct: f64) -> Vec<
         .iter()
         .map(|fs| {
             let threshold_free = (fs.total_bytes as f64 * (100.0 - threshold_pct) / 100.0) as u64;
-            let below_threshold = fs.available_bytes >= threshold_free;
+            let available = fs.final_available_bytes.unwrap_or(fs.available_bytes);
+            let below_threshold = available >= threshold_free;
             let needed_bytes = if below_threshold {
                 0
             } else {
-                threshold_free.saturating_sub(fs.available_bytes)
+                threshold_free.saturating_sub(available)
             };
             HealthEntry {
                 device: fs.device.clone(),
@@ -585,11 +611,17 @@ fn compute_totals(
     }
 }
 
+fn goal_met(fs: &ReclaimFilesystem, available: u64) -> bool {
+    available >= fs.available_bytes.saturating_add(fs.target_free_bytes)
+}
+
 fn refresh_filesystem_result(fs: &mut ReclaimFilesystem) {
     let df = fs.mounts.first().and_then(|mount| mount::df(mount).ok());
     if let Some(df) = df {
         fs.final_available_bytes = Some(df.available_bytes);
-        fs.goal_met = Some(df.available_bytes >= fs.target_free_bytes);
+        fs.goal_met = Some(goal_met(fs, df.available_bytes));
+        fs.used_bytes = df.used_bytes;
+        fs.usage_pct = df.usage_pct();
     } else {
         fs.final_available_bytes = None;
         fs.goal_met = Some(false);
@@ -714,7 +746,7 @@ pub fn format_report_human(report: &ReclaimReport) -> String {
     ));
     if report.totals.skipped_estimated_freed_bytes > 0 {
         output.push_str(&format!(
-            "  Gated by tier policy: {} (use --force to include confirm/risky/report-only targets)\n\n",
+            "  Gated by tier policy: {} (use --force to include configured confirm/risky targets; report-only targets never reclaim space)\n\n",
             human_size(report.totals.skipped_estimated_freed_bytes)
         ));
     }
@@ -863,6 +895,72 @@ fn human_size(bytes: u64) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn configured_reclaim_preserves_pins_and_never_executes_reports() {
+        let dir = tempfile::tempdir().unwrap();
+        let models = dir.path().join("models");
+        std::fs::create_dir(&models).unwrap();
+        std::fs::write(models.join("pinned.gguf"), b"keep").unwrap();
+        std::fs::write(models.join("unused.gguf"), b"remove").unwrap();
+        let settings = serde_json::json!({"modelsDir": models, "pinnedFiles": ["pinned.gguf"]});
+        let policy = dir.path().join("targets.json");
+        std::fs::write(
+            &policy,
+            serde_json::json!({"targets": [
+                {"name": "llama-models", "variant": "prune-unpinned", "settings": settings},
+                {"name": "llama-models", "variant": "disk-report", "settings": settings}
+            ]})
+            .to_string(),
+        )
+        .unwrap();
+        let mut config = ReclaimConfig {
+            config_path: policy.to_str().unwrap().into(),
+            ..Default::default()
+        };
+        let groups = filesystem_groups(&[mount("/", "test", 1000, 960)]);
+        let gated = inspect_targets(&config, &groups).unwrap();
+        assert_eq!(gated.len(), 2);
+        assert_eq!(gated[0].target.status, "skipped");
+        assert_eq!(gated[0].target.estimated_freed_bytes, 6);
+        assert_eq!(gated[1].target.estimated_freed_bytes, 0);
+        config.force = true;
+        let mut targets = inspect_targets(&config, &groups).unwrap();
+        assert_eq!(targets[1].target.status, "skipped");
+        // Even a mistakenly pending report remains non-executable with force.
+        targets[1].target.status = "pending";
+        assert_eq!(execute_target(&mut targets[1].target, &config).unwrap(), 0);
+        assert_eq!(targets[1].target.status, "skipped");
+        assert_eq!(execute_target(&mut targets[0].target, &config).unwrap(), 6);
+        assert!(models.join("pinned.gguf").exists());
+        assert!(!models.join("unused.gguf").exists());
+        std::fs::write(&policy, r#"{"targets": []}"#).unwrap();
+        assert!(inspect_targets(&config, &groups).unwrap().is_empty());
+    }
+
+    #[test]
+    fn threshold_goal_and_post_cleanup_health_agree() {
+        let config = ReclaimConfig::default();
+        let groups = filesystem_groups(&[mount("/", "test", 1000, 960)]);
+        let mut fs = filesystem_report(&groups[0], &config);
+        assert_eq!(fs.target_free_bytes, 110);
+        assert!(!goal_met(&fs, 110));
+        assert!(goal_met(&fs, 150));
+        fs.final_available_bytes = Some(150);
+        let health = compute_health(&[fs], 85.0);
+        assert!(health[0].below_threshold);
+        assert_eq!(health[0].needed_bytes, 0);
+        assert_eq!(
+            compute_target_free(
+                &groups[0].representative,
+                &ReclaimConfig {
+                    min_free_bytes: Some(200),
+                    ..config
+                }
+            ),
+            160
+        );
+    }
+
     fn mount(mount_point: &str, device: &str, total: u64, used: u64) -> MountInfo {
         MountInfo {
             mount_point: mount_point.to_string(),
@@ -882,6 +980,7 @@ mod tests {
         surface: &str,
     ) -> ReclaimTarget {
         ReclaimTarget {
+            settings: serde_json::Value::Null,
             framework,
             variant,
             tier: "safe",
@@ -979,6 +1078,7 @@ mod tests {
                 targets: vec![sample_target("user-cache", "purge-go-build", "/home")],
             }],
             unassigned_targets: vec![ReclaimTarget {
+                settings: serde_json::Value::Null,
                 framework: "failed-units",
                 variant: "reset",
                 tier: "safe",

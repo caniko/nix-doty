@@ -12,7 +12,6 @@
   outputs = inputs @ {
     self,
     nixpkgs,
-    crane,
     flake-parts,
     rust-overlay,
     harbor-rs,
@@ -33,8 +32,11 @@
         };
         inherit (pkgs) lib;
 
-        toolchain = harbor-rs.lib.mkToolchain { inherit pkgs; toolchainProfile = "nightly"; };
-        craneLib = toolchain.craneLib;
+        toolchain = harbor-rs.lib.mkToolchain {
+          inherit pkgs;
+          toolchainProfile = "nightly";
+        };
+        inherit (toolchain) craneLib;
         cross = harbor-rs.lib.mkCross {
           inherit pkgs system;
           enableOsxcross = false;
@@ -47,15 +49,15 @@
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
         defaultPackage = craneLib.buildPackage (commonArgs
-            // {
-              inherit cargoArtifacts;
-              meta = {
-                mainProgram = "doty";
-                description = "Do That Yourself: NixOS cleanup orchestrator";
-                license = lib.licenses.mit;
-                maintainers = ["caniko"];
-              };
-            });
+          // {
+            inherit cargoArtifacts;
+            meta = {
+              mainProgram = "doty";
+              description = "Do That Yourself: NixOS cleanup orchestrator";
+              license = lib.licenses.mit;
+              maintainers = ["caniko"];
+            };
+          });
 
         crossPackageSet = harbor-rs.lib.mkCrossPackages {
           inherit pkgs cross commonArgs craneLib;
@@ -83,6 +85,8 @@
       };
 
       flake = {
+        # Consumers can gate target configuration while upgrading an older pin.
+        lib.persistentRetention = true;
         crossPackages."x86_64-linux"."aarch64-linux".doty = self.packages."x86_64-linux"."doty-aarch64-linux";
         nixosModules.default = {pkgs, ...}: {
           imports = [./module/default.nix];

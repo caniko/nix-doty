@@ -40,9 +40,10 @@ fn stale_cache_inspect(subpath: &str, desc: &str) -> Result<Inspection> {
         path,
         size_bytes: Some(scan.bytes),
         age_oldest_days: None,
-        would_remove: dirs.len() as u64,
+        // This bounded size scan does not determine age-based eligibility.
+        would_remove: 0,
         notes: format!(
-            "{desc} — {count} user dirs with stale entries >30d{suffix}",
+            "{desc} — {count} cache dirs; stale-entry eligibility not assessed; size is total cache footprint, not reclaimable bytes{suffix}",
             count = dirs.len(),
             suffix = if scan.truncated {
                 " (scan truncated)"
@@ -64,7 +65,7 @@ fn stale_cache_apply(subpath: &str, apply: bool) -> Result<ApplyReport> {
             freed_bytes: 0,
             skipped: dirs.len() as u64,
             errors: vec![format!(
-                "dry-run: would prune stale entries >30d from {count} dirs ({})",
+                "dry-run: would inspect {count} cache dirs for entries >30d; eligibility not assessed ({} total cache footprint, not reclaimable bytes)",
                 fmt_bytes(before),
                 count = dirs.len()
             )],
@@ -226,4 +227,20 @@ fn fmt_bytes(bytes: u64) -> String {
         unit_idx += 1;
     }
     format!("{:.1} {}", size, UNITS[unit_idx])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_footprint_does_not_claim_stale_candidates() {
+        let inspection = stale_cache_inspect(".doty-nonexistent-test-cache", "test").unwrap();
+        assert_eq!(inspection.would_remove, 0);
+        assert!(inspection.notes.contains("eligibility not assessed"));
+        assert!(inspection.notes.contains("not reclaimable bytes"));
+        let report = stale_cache_apply(".doty-nonexistent-test-cache", false).unwrap();
+        assert!(report.errors[0].contains("eligibility not assessed"));
+        assert!(report.errors[0].contains("not reclaimable bytes"));
+    }
 }

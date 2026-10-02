@@ -132,6 +132,10 @@ pub struct RmPlan {
     pub root: PathBuf,
     pub quarantine_dir: PathBuf,
     pub targets: Vec<PlannedTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scratch_ledger: Option<crate::scratch_ledger::Config>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scratch_intelligence: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +143,8 @@ pub struct RmPreview {
     pub id: String,
     pub root: PathBuf,
     pub targets: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) scratch_intelligence: Option<serde_json::Value>,
 }
 
 fn plan_path(id: &str) -> PathBuf {
@@ -530,12 +536,13 @@ fn unlink_at(parent: &std::fs::File, name: &std::ffi::OsStr, is_dir: bool) -> Re
     Ok(())
 }
 
-/// Empty a directory through its open handle, never traversing a symlink
-/// and never opening a child for classification: each child is typed with
-/// lstat (no FIFO can block us), links are unlinked as links, and only
-/// verified directories are opened for recursion. Any inspection error
-/// other than a vanished entry fails closed without deleting anything.
-fn remove_tree_fd(dir: &std::fs::File) -> Result<()> {
+/// Policy sweep before any deletion: walk the whole tree refusing
+/// protection-marker names and device boundaries. Name checks need no
+/// opens at all; subdirectories are opened O_DIRECTORY (never blocking).
+/// A marker present anywhere aborts with nothing deleted. A concurrent
+/// writer planting one mid-sweep can still interleave — this is a
+/// deterministic gate, not transactional protection.
+fn policy_tree_fd(dir: &std::fs::File, expected_dev: u64) -> Result<()> {
     use std::os::fd::AsRawFd;
     let listing = format!("/proc/self/fd/{}", dir.as_raw_fd());
     let entries =
@@ -546,12 +553,86 @@ fn remove_tree_fd(dir: &std::fs::File) -> Result<()> {
         if name == "." || name == ".." {
             continue;
         }
+        if name == ".git" || name == crate::guard::PROTECT_MARKER {
+            anyhow::bail!(
+                "refusing protected content inside quarantine: {}",
+                name.to_string_lossy()
+            );
+        }
         let stat = lstat_at(dir, &name).with_context(|| {
             format!(
                 "cannot inspect {}; refusing to guess",
                 name.to_string_lossy()
             )
         })?;
+        if stat.st_dev != expected_dev as libc::dev_t {
+            anyhow::bail!(
+                "refusing mount boundary inside quarantine: {}",
+                name.to_string_lossy()
+            );
+        }
+        if stat.st_mode as libc::mode_t & libc::S_IFMT == libc::S_IFDIR {
+            let child = open_at_nofollow(dir, &name, libc::O_RDONLY | libc::O_DIRECTORY)
+                .with_context(|| {
+                    format!("cannot open {}; refusing to guess", name.to_string_lossy())
+                })?;
+            let open_stat = fstat_of(&child, "quarantine entry")?;
+            if open_stat.st_mode as libc::mode_t & libc::S_IFMT != libc::S_IFDIR
+                || open_stat.st_dev != stat.st_dev
+                || open_stat.st_ino != stat.st_ino
+            {
+                anyhow::bail!(
+                    "quarantine entry changed under us {}; refusing to guess",
+                    name.to_string_lossy()
+                );
+            }
+            policy_tree_fd(&child, expected_dev)?;
+        }
+    }
+    Ok(())
+}
+
+/// Empty a directory through its open handle, never traversing a symlink
+/// and never opening a child for classification: each child is typed with
+/// lstat (no FIFO can block us), links are unlinked as links, and only
+/// verified directories are opened for recursion. Any inspection error
+/// fails closed without deleting anything.
+///
+/// Protection policy is rechecked during traversal, not just at preflight:
+/// a policy sweep runs before the first unlink, so a marker or mount
+/// present anywhere aborts with nothing deleted. A concurrent writer
+/// racing the sweep itself can still interleave — this narrows the window
+/// to the traversal, it does not close it.
+fn remove_tree_fd(dir: &std::fs::File, expected_dev: u64) -> Result<()> {
+    use std::os::fd::AsRawFd;
+    policy_tree_fd(dir, expected_dev)?;
+    let listing = format!("/proc/self/fd/{}", dir.as_raw_fd());
+    let entries =
+        std::fs::read_dir(&listing).with_context(|| "cannot list quarantine directory")?;
+    for entry in entries {
+        let entry = entry.with_context(|| "cannot read quarantine entry")?;
+        let name = entry.file_name();
+        if name == "." || name == ".." {
+            continue;
+        }
+        if name == ".git" || name == crate::guard::PROTECT_MARKER {
+            anyhow::bail!(
+                "refusing protected content inside quarantine: {}",
+                name.to_string_lossy()
+            );
+        }
+        let stat = lstat_at(dir, &name).with_context(|| {
+            format!(
+                "cannot inspect {}; refusing to guess",
+                name.to_string_lossy()
+            )
+        })?;
+        if stat.st_dev != expected_dev as libc::dev_t {
+            anyhow::bail!(
+                "refusing mount boundary inside quarantine: {}",
+                name.to_string_lossy()
+            );
+        }
         match stat.st_mode as libc::mode_t & libc::S_IFMT {
             libc::S_IFDIR => {
                 // O_DIRECTORY: a swap for a FIFO after the lstat fails
@@ -570,7 +651,7 @@ fn remove_tree_fd(dir: &std::fs::File) -> Result<()> {
                         name.to_string_lossy()
                     );
                 }
-                remove_tree_fd(&child)?;
+                remove_tree_fd(&child, expected_dev)?;
                 unlink_at(dir, &name, true)?;
             }
             // Files, FIFOs, sockets, devices, and links: unlink the name
@@ -729,14 +810,12 @@ fn prepare_quarantine(plan: &RmPlan) -> Result<()> {
                 plan.quarantine_dir.display()
             );
         }
-        // Marker exists: verify it is a real file, not a link, via handle.
-        let marker_handle = open_at_nofollow(
-            &handle,
-            std::ffi::OsStr::new(crate::guard::PROTECT_MARKER),
-            libc::O_RDONLY,
-        )?;
-        let mstat = fstat_of(&marker_handle, "quarantine marker")?;
-        if (mstat.st_mode & libc::S_IFMT) != libc::S_IFREG {
+        // Marker exists: classify it with lstat before any open — a FIFO
+        // marker must be refused, never opened (a blocking open here
+        // would hang under the plan lock).
+        let marker_os = std::ffi::OsStr::new(crate::guard::PROTECT_MARKER);
+        let marker_stat = lstat_at(&handle, marker_os)?;
+        if marker_stat.st_mode & libc::S_IFMT != libc::S_IFREG {
             anyhow::bail!(
                 "refusing quarantine with unexpected marker: {}",
                 plan.quarantine_dir.display()
@@ -978,6 +1057,14 @@ fn reconcile_pending(plan: &mut RmPlan) -> Result<bool> {
 
 /// Validate targets and record a plan. Writes nothing on any failure.
 pub fn plan_removal(root: &Path, targets: &[PathBuf]) -> Result<RmPreview> {
+    plan_removal_with_ledger(root, targets, None)
+}
+
+pub(crate) fn plan_removal_with_ledger(
+    root: &Path,
+    targets: &[PathBuf],
+    ledger: Option<crate::scratch_ledger::Config>,
+) -> Result<RmPreview> {
     if targets.is_empty() {
         anyhow::bail!("no removal targets given");
     }
@@ -1034,12 +1121,21 @@ pub fn plan_removal(root: &Path, targets: &[PathBuf]) -> Result<RmPreview> {
             }
         }
     }
+    let scratch_intelligence = if let Some(config) = &ledger {
+        config.validate_root(&root_canonical)?;
+        let paths = planned.iter().map(|t| t.path.clone()).collect::<Vec<_>>();
+        Some(config.inspect_for_cleanup(&crate::scratch_ledger::paths(&paths))?)
+    } else {
+        None
+    };
     let plan = RmPlan {
         id: new_plan_id(),
         created_at: chrono_now_rfc3339(),
         root: root_canonical,
         quarantine_dir,
         targets: planned,
+        scratch_ledger: ledger,
+        scratch_intelligence,
     };
     let preview = RmPreview {
         id: plan.id.clone(),
@@ -1049,6 +1145,7 @@ pub fn plan_removal(root: &Path, targets: &[PathBuf]) -> Result<RmPreview> {
             .iter()
             .map(|target| target.path.clone())
             .collect(),
+        scratch_intelligence: plan.scratch_intelligence.clone(),
     };
     save_plan(&plan)?;
     Ok(preview)
@@ -1114,11 +1211,24 @@ pub fn apply_plan(id: &str) -> Result<RmPlan> {
     if pending.is_empty() {
         return Ok(journaled);
     }
+    if let Some(ledger) = &plan.scratch_ledger {
+        let paths = pending
+            .iter()
+            .map(|&i| plan.targets[i].path.clone())
+            .collect::<Vec<_>>();
+        journaled.scratch_intelligence =
+            Some(ledger.require_released(&crate::scratch_ledger::paths(&paths))?);
+    }
     prepare_quarantine(&plan)?;
 
     for index in pending {
         let target = &plan.targets[index];
         let destination = quarantine_destination(&plan, index, &target.path)?;
+        if let Some(ledger) = &plan.scratch_ledger {
+            ledger.require_released(&crate::scratch_ledger::paths(std::slice::from_ref(
+                &target.path,
+            )))?;
+        }
         journaled.targets[index].pending_op = Some(PendingOp::Quarantine);
         journal_write(&journaled)?;
         rename_contained(&plan.root, &target.path, &destination).with_context(|| {
@@ -1261,12 +1371,28 @@ pub fn purge_apply(id: &str) -> Result<RmPlan> {
     if pending.is_empty() {
         return Ok(journaled);
     }
+    if let Some(ledger) = &plan.scratch_ledger {
+        let paths = pending
+            .iter()
+            .map(|&i| crate::scratch_ledger::QueryPath {
+                path: plan.targets[i].path.clone(),
+                at: plan.targets[i].quarantined_as.clone(),
+            })
+            .collect::<Vec<_>>();
+        journaled.scratch_intelligence = Some(ledger.require_released(&paths)?);
+    }
     for index in pending {
         let destination = journaled.targets[index]
             .quarantined_as
             .clone()
             .expect("checked above");
         let expected = journaled.targets[index].clone();
+        if let Some(ledger) = &plan.scratch_ledger {
+            ledger.require_released(&[crate::scratch_ledger::QueryPath {
+                path: expected.path.clone(),
+                at: Some(destination.clone()),
+            }])?;
+        }
         // Re-check identity at deletion time: the preflight above and this
         // check bracket the batch, but entries are removed one by one.
         let meta = std::fs::symlink_metadata(&destination)
@@ -1334,7 +1460,7 @@ pub fn purge_apply(id: &str) -> Result<RmPlan> {
                     destination.display()
                 );
             }
-            remove_tree_fd(&dir_handle)?;
+            remove_tree_fd(&dir_handle, expected.dev)?;
             drop(dir_handle);
             unlink_at(&quarantine_handle, entry_name, true)
                 .with_context(|| format!("cannot purge {}", destination.display()))?;
@@ -1693,7 +1819,9 @@ mod tests {
 
         let id = preview.id.clone();
         let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || tx.send(purge_apply(&id)));
+        std::thread::spawn(move || {
+            let _ = tx.send(purge_apply(&id));
+        });
         let purged = rx
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("purge blocked, likely on a FIFO open")
@@ -1934,6 +2062,59 @@ mod tests {
         assert!(err.to_string().contains("protected"), "{err}");
         assert!(dest.join("a.txt").exists(), "nothing may be deleted");
         assert!(!applied.targets[0].purged);
+    }
+
+    /// A FIFO swapped in as the quarantine marker must be refused without
+    /// opening it: the old blocking open would hang under the plan lock.
+    #[test]
+    fn fifo_quarantine_marker_is_refused_without_blocking() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::sync::mpsc;
+        let root = temp_root();
+        let _state = with_state_dir(root.path());
+        let first = root.path().join("a.txt");
+        std::fs::write(&first, "a").unwrap();
+        let preview_a = plan_removal(root.path(), std::slice::from_ref(&first)).unwrap();
+        let applied = apply_plan(&preview_a.id).unwrap();
+        // Swap the real marker for a FIFO, then run a second plan whose
+        // apply must revalidate the quarantine.
+        std::fs::remove_file(applied.quarantine_dir.join(crate::guard::PROTECT_MARKER)).unwrap();
+        let fifo = applied.quarantine_dir.join(crate::guard::PROTECT_MARKER);
+        let fifo_c = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: test-only FIFO under a temp dir.
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o600) }, 0);
+        let second = root.path().join("b.txt");
+        std::fs::write(&second, "b").unwrap();
+        let preview_b = plan_removal(root.path(), std::slice::from_ref(&second)).unwrap();
+        let id = preview_b.id.clone();
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(apply_plan(&id));
+        });
+        let err = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("marker validation blocked, likely on a FIFO open")
+            .unwrap_err();
+        assert!(err.to_string().contains("unexpected marker"), "{err}");
+        assert!(!first.exists(), "first target stays quarantined");
+        assert!(second.exists(), "second target must not move on refusal");
+    }
+
+    /// Traversal-time protection: remove_tree_fd itself refuses marker
+    /// names, so protection appearing after preflight still aborts.
+    #[test]
+    fn remove_tree_fd_refuses_marker_names() {
+        use std::os::unix::fs::MetadataExt;
+        let root = temp_root();
+        let dir = root.path().join("tree");
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), "a").unwrap();
+        std::fs::write(dir.join(crate::guard::PROTECT_MARKER), "hold\n").unwrap();
+        let dev = std::fs::metadata(&dir).unwrap().dev();
+        let handle = open_dir_nofollow(&dir).unwrap();
+        let err = remove_tree_fd(&handle, dev).unwrap_err();
+        assert!(err.to_string().contains("protected"), "{err}");
+        assert!(dir.join("a.txt").exists(), "nothing may be deleted");
     }
 
     /// Partial batch: A quarantined, B never applied. Restore moves A and

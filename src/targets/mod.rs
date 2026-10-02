@@ -24,6 +24,7 @@ mod pink_raven_workers;
 mod podman_images;
 mod qbittorrent_torrents;
 mod report;
+mod retention;
 mod sccache_garage;
 mod steampipe_state;
 mod tmp_stale;
@@ -55,6 +56,9 @@ pub use pg_backup_state::PG_BACKUP_STATE;
 pub use pink_raven_workers::PINK_RAVEN_WORKERS;
 pub use podman_images::PODMAN_IMAGES;
 pub use qbittorrent_torrents::QBITTORRENT_TORRENTS;
+pub use retention::{
+    CARGO_BUILDS, MANAGED_MODELS, MODEL_DIRECTORIES, PACKAGE_CACHES, RETAINED_STATE,
+};
 pub use sccache_garage::SCCACHE_GARAGE;
 pub use steampipe_state::STEAMPIPE_STATE;
 pub use tmp_stale::TMP_STALE;

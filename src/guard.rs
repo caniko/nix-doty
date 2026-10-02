@@ -36,7 +36,8 @@ pub struct GuardedPath {
 /// Fails closed on: missing path, symlinks anywhere in the resolved chain,
 /// mount boundaries (dev differs from the root), special files, protection
 /// markers on the path or any ancestor up to the root, and git repository
-/// markers (`.git` file or dir) on the path itself.
+/// markers (`.git` file or dir) on the path or ancestors. The sole repository
+/// exception is an ignored, untracked `target` directory with a Cargo cache tag.
 pub fn guard_path(path: &Path, allowed_root: &Path) -> Result<GuardedPath> {
     let root = allowed_root
         .canonicalize()
@@ -117,7 +118,7 @@ pub fn guard_path(path: &Path, allowed_root: &Path) -> Result<GuardedPath> {
         if dir.join(PROTECT_MARKER).is_file() {
             anyhow::bail!("refusing protected path: {}", candidate.display());
         }
-        if dir.join(".git").exists() {
+        if dir.join(".git").exists() && !ignored_cargo_target(&candidate, dir)? {
             anyhow::bail!("refusing git repository content: {}", candidate.display());
         }
         if dir == root {
@@ -135,6 +136,41 @@ pub fn guard_path(path: &Path, allowed_root: &Path) -> Result<GuardedPath> {
         mtime_secs: meta.mtime(),
         mtime_nanos: meta.mtime_nsec() as u32,
     })
+}
+
+/// Cargo's generated target directory may live inside a checkout. A tag alone
+/// is not authority: Git must ignore it and have no tracked content beneath it.
+fn ignored_cargo_target(candidate: &Path, repository: &Path) -> Result<bool> {
+    if candidate.file_name() != Some(std::ffi::OsStr::new("target")) || candidate == repository {
+        return Ok(false);
+    }
+    let tag = candidate.join("CACHEDIR.TAG");
+    let Ok(meta) = std::fs::symlink_metadata(&tag) else {
+        return Ok(false);
+    };
+    if !meta.is_file() || meta.len() > 4096 {
+        return Ok(false);
+    }
+    if !std::fs::read(&tag)?.starts_with(b"Signature: 8a477f597d28d172789f06886806bc55") {
+        return Ok(false);
+    }
+    let relative = candidate.strip_prefix(repository)?;
+    let ignored = std::process::Command::new("git")
+        .args(["--no-optional-locks", "-C"])
+        .arg(repository)
+        .args(["check-ignore", "--quiet", "--"])
+        .arg(relative)
+        .status()?;
+    if !ignored.success() {
+        return Ok(false);
+    }
+    let tracked = std::process::Command::new("git")
+        .args(["--no-optional-locks", "--literal-pathspecs", "-C"])
+        .arg(repository)
+        .args(["ls-files", "--cached", "--"])
+        .arg(relative)
+        .output()?;
+    Ok(tracked.status.success() && tracked.stdout.is_empty())
 }
 
 /// Full identity tuple for raw metadata, for call sites (restore/purge)
@@ -201,6 +237,46 @@ mod tests {
 
     fn fixture() -> tempfile::TempDir {
         tempfile::tempdir().expect("fixture dir")
+    }
+
+    #[test]
+    fn only_ignored_untracked_tagged_cargo_output_is_allowed_in_repository() -> Result<()> {
+        let root = fixture();
+        let repository = root.path().join("repo");
+        std::fs::create_dir(&repository)?;
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        assert!(git(&["init", "--quiet"]).status.success());
+        let target = repository.join("target");
+        std::fs::create_dir(&target)?;
+        std::fs::write(
+            target.join("CACHEDIR.TAG"),
+            b"Signature: 8a477f597d28d172789f06886806bc55\n",
+        )?;
+        assert!(guard_path(&target, root.path()).is_err());
+        std::fs::write(repository.join(".gitignore"), b"/target/\n")?;
+        assert!(guard_path(&target, root.path()).is_ok());
+        assert!(guard_path(&repository, root.path()).is_err());
+        std::fs::write(repository.join(PROTECT_MARKER), b"")?;
+        assert!(guard_path(&target, root.path()).is_err());
+        std::fs::remove_file(repository.join(PROTECT_MARKER))?;
+        std::fs::write(target.join("source.rs"), b"valuable")?;
+        assert!(git(&["add", "-f", "target/source.rs"]).status.success());
+        assert!(guard_path(&target, root.path()).is_err());
+        assert!(
+            git(&["rm", "--cached", "target/source.rs"])
+                .status
+                .success()
+        );
+        std::fs::write(target.join("CACHEDIR.TAG"), b"not a cache tag")?;
+        assert!(guard_path(&target, root.path()).is_err());
+        Ok(())
     }
 
     #[test]

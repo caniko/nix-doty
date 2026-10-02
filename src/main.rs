@@ -5,10 +5,12 @@ mod config;
 mod exec;
 pub mod framework;
 pub mod guard;
+mod model_lock;
 pub mod mount;
 pub mod reclaim;
 pub mod registry;
 pub mod rm;
+mod scratch_ledger;
 pub mod targets;
 
 fn main() -> anyhow::Result<()> {
