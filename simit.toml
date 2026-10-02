@@ -3,4 +3,13 @@ provider = "actions"
 platform = "github"
 runtime = "nix"
 runner = "ubuntu-24.04"
+nix_builds = [".#packages.x86_64-linux.doty", ".#checks.x86_64-linux.clippy"]
 all_features = false
+
+[ci.nix_build]
+capture_results = true
+timeout_minutes = 120
+max_parallel = 2
+max_jobs = 1
+cores = 2
+artifact_retention_days = 30
