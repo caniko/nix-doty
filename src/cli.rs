@@ -9,6 +9,8 @@ use clap::{Parser, Subcommand};
     long_about = "doty inspects and cleans temporary state accumulated by NixOS services and frameworks. Each framework has one or more cleanup variants with tiered safety (safe, confirm, risky, report-only). Run `doty status` to inspect, `doty run` to act. Dry-run by default."
 )]
 pub struct Cli {
+    #[command(flatten)]
+    ledger: crate::scratch_ledger::Options,
     #[command(subcommand)]
     pub command: Command,
 }
@@ -141,15 +143,16 @@ pub enum Command {
 
 impl Cli {
     pub fn run(self) -> Result<()> {
+        let ledger = self.ledger.config()?;
         match self.command {
-            Command::Analyze { agent } => agent.run(),
+            Command::Analyze { agent } => agent.run(ledger.as_ref()),
             Command::List { json } => crate::commands::list(json),
             Command::Status {
                 target,
                 variant,
                 config,
                 json,
-            } => crate::commands::status(target, variant, &config, json),
+            } => crate::commands::status(target, variant, &config, json, ledger.as_ref()),
             Command::Run {
                 target,
                 variant,
@@ -157,7 +160,15 @@ impl Cli {
                 apply,
                 force,
                 json,
-            } => crate::commands::run(target, variant, &config, apply, force, json),
+            } => crate::commands::run(
+                target,
+                variant,
+                &config,
+                apply,
+                force,
+                json,
+                ledger.as_ref(),
+            ),
             Command::Doctor { config, json } => crate::commands::doctor(&config, json),
             Command::Rm {
                 root,
@@ -165,7 +176,7 @@ impl Cli {
                 plan,
                 targets,
                 json,
-            } => crate::commands::rm(&root, apply, plan.as_deref(), &targets, json),
+            } => crate::commands::rm(&root, apply, plan.as_deref(), &targets, json, ledger),
             Command::Restore { plan, json } => crate::commands::restore(&plan, json),
             Command::Purge { plan, apply, json } => crate::commands::purge(&plan, apply, json),
             Command::Reclaim {

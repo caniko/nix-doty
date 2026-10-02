@@ -46,6 +46,8 @@ struct Settings {
     /// without process scanning.
     #[serde(default = "default_min_idle_minutes")]
     min_idle_minutes: u32,
+    #[serde(default)]
+    scratch_ledger: Option<crate::scratch_ledger::Config>,
 }
 
 fn default_root() -> PathBuf {
@@ -61,6 +63,12 @@ fn default_min_idle_minutes() -> u32 {
 }
 
 impl Settings {
+    fn ledger(&self) -> Result<Option<crate::scratch_ledger::Config>> {
+        match &self.scratch_ledger {
+            Some(config) => Ok(Some(config.clone())),
+            None => crate::scratch_ledger::Options::default().config(),
+        }
+    }
     fn from_value(value: &Value) -> Result<Self> {
         if value.is_null() {
             return Ok(Self {
@@ -69,6 +77,7 @@ impl Settings {
                 files: Vec::new(),
                 require_proof: default_require_proof(),
                 min_idle_minutes: default_min_idle_minutes(),
+                scratch_ledger: None,
             });
         }
         serde_json::from_value(value.clone()).map_err(Into::into)
@@ -303,7 +312,19 @@ impl Variant for PurgeAllowlistedTargets {
     fn inspect_with_settings(&self, settings: &Value) -> Result<Inspection> {
         let settings = Settings::from_value(settings)?;
         let (candidates, skipped) = resolve_candidates(&settings);
-        Ok(inspection(self, &settings.root, &candidates, &skipped))
+        let mut result = inspection(self, &settings.root, &candidates, &skipped);
+        if let Some(ledger) = settings.ledger()? {
+            ledger.validate_root(&settings.root)?;
+            let paths = candidates
+                .iter()
+                .map(|c| c.path.clone())
+                .collect::<Vec<_>>();
+            let packet = ledger.inspect(&crate::scratch_ledger::paths(&paths))?;
+            result
+                .notes
+                .push_str(&format!("; scratch intelligence: {packet}"));
+        }
+        Ok(result)
     }
 
     fn apply(&self, apply: bool, force: bool) -> Result<ApplyReport> {
@@ -320,6 +341,22 @@ impl Variant for PurgeAllowlistedTargets {
         let (candidates, skipped) = resolve_candidates(&settings);
         let count = candidates.len() as u64;
         let bytes = candidates.iter().map(|c| c.bytes).sum();
+        let ledger = settings.ledger()?;
+        let intelligence = if let Some(ledger) = &ledger {
+            ledger.validate_root(&settings.root)?;
+            let paths = candidates
+                .iter()
+                .map(|c| c.path.clone())
+                .collect::<Vec<_>>();
+            let requested = crate::scratch_ledger::paths(&paths);
+            Some(if apply {
+                ledger.require_released(&requested)?
+            } else {
+                ledger.inspect_for_cleanup(&requested)?
+            })
+        } else {
+            None
+        };
         if !apply {
             let mut errors = vec![format!(
                 "dry-run: would remove {count} allowlisted scratch entries ({}){}",
@@ -328,6 +365,9 @@ impl Variant for PurgeAllowlistedTargets {
             )];
             for skip in &skipped {
                 errors.push(format!("skipped {}: {}", skip.path, skip.reason));
+            }
+            if let Some(packet) = intelligence {
+                errors.push(format!("scratch intelligence: {packet}"));
             }
             return Ok(ApplyReport {
                 framework: self.framework().name(),
@@ -343,6 +383,11 @@ impl Variant for PurgeAllowlistedTargets {
         let mut freed_bytes: u64 = 0;
         let mut errors = Vec::new();
         for candidate in candidates {
+            if let Some(ledger) = &ledger {
+                ledger.require_released(&crate::scratch_ledger::paths(std::slice::from_ref(
+                    &candidate.path,
+                )))?;
+            }
             let outcome = if candidate.path.is_dir() {
                 fs::remove_dir_all(&candidate.path).map_err(|e| e.to_string())
             } else {

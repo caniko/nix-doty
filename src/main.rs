@@ -9,6 +9,7 @@ pub mod mount;
 pub mod reclaim;
 pub mod registry;
 pub mod rm;
+mod scratch_ledger;
 pub mod targets;
 
 fn main() -> anyhow::Result<()> {

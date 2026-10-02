@@ -56,6 +56,22 @@ struct SelectedVariant {
     settings: Value,
 }
 
+fn ledger_settings(
+    selected: &SelectedVariant,
+    ledger: Option<&crate::scratch_ledger::Config>,
+) -> Result<Value> {
+    let mut settings = selected.settings.clone();
+    if selected.variant.framework().name() == "opencode-scratch" {
+        if let Some(ledger) = ledger {
+            if settings.is_null() {
+                settings = serde_json::json!({});
+            }
+            settings["scratchLedger"] = serde_json::to_value(ledger)?;
+        }
+    }
+    Ok(settings)
+}
+
 pub fn list(json: bool) -> Result<()> {
     let entries: Vec<ListEntry> = registry::ALL_FRAMEWORKS
         .iter()
@@ -101,13 +117,15 @@ pub fn status(
     variant: Option<String>,
     config_path: &str,
     json: bool,
+    ledger: Option<&crate::scratch_ledger::Config>,
 ) -> Result<()> {
     let frameworks = select_variants(target.as_deref(), variant.as_deref(), config_path)?;
 
     let mut inspections = Vec::new();
     for selected in &frameworks {
         let v = selected.variant;
-        match v.inspect_with_settings(&selected.settings) {
+        let settings = ledger_settings(selected, ledger)?;
+        match v.inspect_with_settings(&settings) {
             Ok(i) => inspections.push(i),
             Err(e) => {
                 eprintln!(
@@ -177,6 +195,7 @@ pub fn run(
     apply: bool,
     force: bool,
     json: bool,
+    ledger: Option<&crate::scratch_ledger::Config>,
 ) -> Result<()> {
     let variants = select_variants(target.as_deref(), variant.as_deref(), config_path)?;
 
@@ -201,7 +220,8 @@ pub fn run(
                 _ => {}
             }
         }
-        match v.apply_with_settings(apply, force, &selected.settings) {
+        let settings = ledger_settings(selected, ledger)?;
+        match v.apply_with_settings(apply, force, &settings) {
             Ok(r) => {
                 if !json {
                     let prefix = if apply { "APPLIED" } else { "DRY-RUN" };
@@ -504,6 +524,8 @@ struct RmPreviewOutput {
     root: std::path::PathBuf,
     targets: Vec<std::path::PathBuf>,
     applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scratch_intelligence: Option<Value>,
 }
 
 /// Plan guarded scratch removal, or apply a recorded plan by id.
@@ -513,9 +535,15 @@ pub fn rm(
     plan: Option<&str>,
     targets: &[String],
     json: bool,
+    ledger: Option<crate::scratch_ledger::Config>,
 ) -> Result<()> {
     use std::path::PathBuf;
     if let Some(id) = plan {
+        if ledger.is_some() && crate::rm::describe_plan(id)?.scratch_ledger.is_none() {
+            anyhow::bail!(
+                "removal plan predates configured scratch intelligence; create a new ledger-backed plan"
+            );
+        }
         if !targets.is_empty() {
             anyhow::bail!("pass either --plan or target paths, not both");
         }
@@ -533,7 +561,7 @@ pub fn rm(
         anyhow::bail!("no removal targets given (or pass --plan <id>)");
     }
     let paths: Vec<PathBuf> = targets.iter().map(PathBuf::from).collect();
-    let preview = crate::rm::plan_removal(Path::new(root), &paths)?;
+    let preview = crate::rm::plan_removal_with_ledger(Path::new(root), &paths, ledger)?;
     if !apply {
         print_rm_plan_preview(&preview, json)?;
         return Ok(());
@@ -552,6 +580,7 @@ fn print_rm_plan_preview(preview: &crate::rm::RmPreview, json: bool) -> Result<(
                 root: preview.root.clone(),
                 targets: preview.targets.clone(),
                 applied: false,
+                scratch_intelligence: preview.scratch_intelligence.clone(),
             })?
         );
         return Ok(());
@@ -560,6 +589,9 @@ fn print_rm_plan_preview(preview: &crate::rm::RmPreview, json: bool) -> Result<(
     println!("  root: {}", preview.root.display());
     for target in &preview.targets {
         println!("  quarantine candidate: {}", target.display());
+    }
+    if let Some(packet) = &preview.scratch_intelligence {
+        crate::scratch_ledger::print_report(packet);
     }
     println!("Review, then run: doty rm --apply --plan {}", preview.id);
     Ok(())
@@ -579,6 +611,9 @@ fn print_rm_plan(plan: &crate::rm::RmPlan, applied: bool, json: bool) -> Result<
             (None, _, true) => println!("  {} (purged)", target.path.display()),
             (None, false, false) => println!("  {} (pending)", target.path.display()),
         }
+    }
+    if let Some(packet) = &plan.scratch_intelligence {
+        crate::scratch_ledger::print_report(packet);
     }
     Ok(())
 }

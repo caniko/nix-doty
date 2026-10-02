@@ -132,6 +132,10 @@ pub struct RmPlan {
     pub root: PathBuf,
     pub quarantine_dir: PathBuf,
     pub targets: Vec<PlannedTarget>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scratch_ledger: Option<crate::scratch_ledger::Config>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scratch_intelligence: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -139,6 +143,8 @@ pub struct RmPreview {
     pub id: String,
     pub root: PathBuf,
     pub targets: Vec<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) scratch_intelligence: Option<serde_json::Value>,
 }
 
 fn plan_path(id: &str) -> PathBuf {
@@ -978,6 +984,14 @@ fn reconcile_pending(plan: &mut RmPlan) -> Result<bool> {
 
 /// Validate targets and record a plan. Writes nothing on any failure.
 pub fn plan_removal(root: &Path, targets: &[PathBuf]) -> Result<RmPreview> {
+    plan_removal_with_ledger(root, targets, None)
+}
+
+pub(crate) fn plan_removal_with_ledger(
+    root: &Path,
+    targets: &[PathBuf],
+    ledger: Option<crate::scratch_ledger::Config>,
+) -> Result<RmPreview> {
     if targets.is_empty() {
         anyhow::bail!("no removal targets given");
     }
@@ -1034,16 +1048,26 @@ pub fn plan_removal(root: &Path, targets: &[PathBuf]) -> Result<RmPreview> {
             }
         }
     }
+    let scratch_intelligence = if let Some(config) = &ledger {
+        config.validate_root(&root_canonical)?;
+        let paths = planned.iter().map(|t| t.path.clone()).collect::<Vec<_>>();
+        Some(config.inspect_for_cleanup(&crate::scratch_ledger::paths(&paths))?)
+    } else {
+        None
+    };
     let plan = RmPlan {
         id: new_plan_id(),
         created_at: chrono_now_rfc3339(),
         root: root_canonical,
         quarantine_dir,
         targets: planned,
+        scratch_ledger: ledger,
+        scratch_intelligence,
     };
     let preview = RmPreview {
         id: plan.id.clone(),
         root: plan.root.clone(),
+        scratch_intelligence: plan.scratch_intelligence.clone(),
         targets: plan
             .targets
             .iter()
@@ -1114,11 +1138,24 @@ pub fn apply_plan(id: &str) -> Result<RmPlan> {
     if pending.is_empty() {
         return Ok(journaled);
     }
+    if let Some(ledger) = &plan.scratch_ledger {
+        let paths = pending
+            .iter()
+            .map(|&i| plan.targets[i].path.clone())
+            .collect::<Vec<_>>();
+        journaled.scratch_intelligence =
+            Some(ledger.require_released(&crate::scratch_ledger::paths(&paths))?);
+    }
     prepare_quarantine(&plan)?;
 
     for index in pending {
         let target = &plan.targets[index];
         let destination = quarantine_destination(&plan, index, &target.path)?;
+        if let Some(ledger) = &plan.scratch_ledger {
+            ledger.require_released(&crate::scratch_ledger::paths(std::slice::from_ref(
+                &target.path,
+            )))?;
+        }
         journaled.targets[index].pending_op = Some(PendingOp::Quarantine);
         journal_write(&journaled)?;
         rename_contained(&plan.root, &target.path, &destination).with_context(|| {
@@ -1261,12 +1298,28 @@ pub fn purge_apply(id: &str) -> Result<RmPlan> {
     if pending.is_empty() {
         return Ok(journaled);
     }
+    if let Some(ledger) = &plan.scratch_ledger {
+        let paths = pending
+            .iter()
+            .map(|&i| crate::scratch_ledger::QueryPath {
+                path: plan.targets[i].path.clone(),
+                at: plan.targets[i].quarantined_as.clone(),
+            })
+            .collect::<Vec<_>>();
+        journaled.scratch_intelligence = Some(ledger.require_released(&paths)?);
+    }
     for index in pending {
         let destination = journaled.targets[index]
             .quarantined_as
             .clone()
             .expect("checked above");
         let expected = journaled.targets[index].clone();
+        if let Some(ledger) = &plan.scratch_ledger {
+            ledger.require_released(&[crate::scratch_ledger::QueryPath {
+                path: expected.path.clone(),
+                at: Some(destination.clone()),
+            }])?;
+        }
         // Re-check identity at deletion time: the preflight above and this
         // check bracket the batch, but entries are removed one by one.
         let meta = std::fs::symlink_metadata(&destination)
@@ -1693,7 +1746,9 @@ mod tests {
 
         let id = preview.id.clone();
         let (tx, rx) = mpsc::channel();
-        std::thread::spawn(move || tx.send(purge_apply(&id)));
+        std::thread::spawn(move || {
+            let _ = tx.send(purge_apply(&id));
+        });
         let purged = rx
             .recv_timeout(std::time::Duration::from_secs(30))
             .expect("purge blocked, likely on a FIFO open")

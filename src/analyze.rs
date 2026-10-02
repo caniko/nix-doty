@@ -125,9 +125,29 @@ pub struct Options {
 }
 
 impl Agent {
-    pub fn run(self) -> Result<()> {
+    pub fn run(self, ledger: Option<&crate::scratch_ledger::Config>) -> Result<()> {
         let Self::Opencode(options) = self;
-        let report = scan(&options)?;
+        let mut report = scan(&options)?;
+        if let Some(ledger) = ledger {
+            let paths: Vec<_> = report.entries.iter().map(|e| e.path.clone()).collect();
+            let mut packets = Vec::new();
+            let mut complete = true;
+            for chunk in paths.chunks(256) {
+                match ledger.inspect(&crate::scratch_ledger::paths(chunk)) {
+                    Ok(packet) => {
+                        complete &= packet["complete"] == true;
+                        packets.push(packet);
+                    }
+                    Err(error) => {
+                        complete = false;
+                        packets
+                            .push(serde_json::json!({"error":error.to_string(),"complete":false}));
+                    }
+                }
+            }
+            report.scratch_ledger =
+                Some(serde_json::json!({"version":1,"complete":complete,"packets":packets}));
+        }
         if options.json {
             println!("{}", serde_json::to_string_pretty(&report)?);
         } else {
@@ -195,6 +215,11 @@ impl Agent {
                 println!("Issue: {}", serde_json::to_string(issue)?);
             }
             println!("{}", report.caveat);
+            if let Some(ledger) = &report.scratch_ledger {
+                for packet in ledger["packets"].as_array().into_iter().flatten() {
+                    crate::scratch_ledger::print_report(packet);
+                }
+            }
         }
         Ok(())
     }
@@ -335,6 +360,8 @@ struct Report {
     issues_by_reason: BTreeMap<String, usize>,
     issues: Vec<String>,
     caveat: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scratch_ledger: Option<serde_json::Value>,
 }
 
 #[cfg(target_os = "linux")]
@@ -684,6 +711,7 @@ fn scan(options: &Options) -> Result<Report> {
         issues_by_reason: BTreeMap::new(),
         issues: Vec::new(),
         caveat: "Live metadata scan, not a snapshot or deletion authorization. Logical file bytes are not reclaimable disk space; hardlinks count per pathname. Symlinks, other devices and special files are skipped. Partial scans are lower bounds; bounded traversal order is filesystem-dependent. Modification age does not prove inactivity.",
+        scratch_ledger: None,
     };
     let mut remaining = options.max_entries;
     let mut log = IssueLog {
