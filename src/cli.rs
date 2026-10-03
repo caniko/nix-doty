@@ -69,6 +69,9 @@ pub enum Command {
         /// Path to the NixOS-declared targets.json
         #[arg(long, default_value = "/etc/doty/targets.json")]
         config: String,
+        /// Compare activated configuration to an evaluated candidate document
+        #[arg(long)]
+        expected_config: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -172,7 +175,11 @@ impl Cli {
                 json,
                 ledger.as_ref(),
             ),
-            Command::Doctor { config, json } => crate::commands::doctor(&config, json),
+            Command::Doctor {
+                config,
+                expected_config,
+                json,
+            } => crate::commands::doctor(&config, expected_config.as_deref(), json),
             Command::Rm {
                 root,
                 apply,

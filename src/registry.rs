@@ -36,6 +36,8 @@ pub static ALL_FRAMEWORKS: &[&dyn Framework] = &[
     crate::targets::MODEL_DIRECTORIES,
     crate::targets::MANAGED_MODELS,
     crate::targets::RETAINED_STATE,
+    crate::targets::NIX_BUILDS,
+    crate::targets::SERVICE_STORAGE,
 ];
 
 pub fn find_framework(name: &str) -> Option<&'static dyn Framework> {

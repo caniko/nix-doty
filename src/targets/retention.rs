@@ -16,6 +16,9 @@ use std::os::unix::fs::OpenOptionsExt;
 #[path = "model_inventory.rs"]
 mod model_inventory;
 pub use model_inventory::MANAGED_MODELS;
+#[path = "persistent_storage.rs"]
+mod persistent_storage;
+pub use persistent_storage::{NIX_BUILDS, SERVICE_STORAGE};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -167,6 +170,11 @@ impl Default for Settings {
 
 impl Settings {
     fn parse(value: &Value) -> Result<Self> {
+        Self::parse_with_roots(value, true)
+    }
+
+    // Reports must preserve inaccessible/missing roots as inspection issues.
+    fn parse_with_roots(value: &Value, require_existing: bool) -> Result<Self> {
         let result: Self = if value.is_null() {
             Self::default()
         } else {
@@ -211,7 +219,9 @@ impl Settings {
                 root.parent().is_some(),
                 "filesystem root is not a retention root"
             );
-            real_directory(root)?;
+            if require_existing {
+                real_directory(root)?;
+            }
         }
         for (index, root) in result.roots.iter().enumerate() {
             ensure!(
@@ -373,6 +383,11 @@ fn scan_tree(path: &Path, settings: &Settings, remaining: &mut u64) -> Result<Sc
             meta.mtime_nsec(),
         )
             .hash(&mut hasher);
+        // Renaming the candidate into quarantine changes its own ctime.
+        // Descendant ctimes still detect same-size edits with restored mtimes.
+        if depth > 0 {
+            (meta.ctime(), meta.ctime_nsec()).hash(&mut hasher);
+        }
         match meta.modified() {
             Ok(time) => scan.newest = Some(scan.newest.map_or(time, |previous| previous.max(time))),
             Err(_) => scan.complete = false,
@@ -655,7 +670,7 @@ fn process_paths(uid: u32) -> Result<ProcessUse> {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
             Err(error) => return Err(error.into()),
         };
-        if metadata.uid() != uid && !(root_operator && metadata.uid() == 0) {
+        if !root_operator && metadata.uid() != uid {
             continue;
         }
         let references = (|| -> Result<()> {
