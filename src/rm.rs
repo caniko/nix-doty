@@ -164,10 +164,22 @@ pub(crate) fn plan_lock_path(id: &str) -> Result<PathBuf> {
 }
 
 /// Exclusive non-blocking per-plan lock. Returned handle must be held for
-/// the whole mutating operation; closing it releases the lock. Two doty
+/// the whole mutating operation. Two doty
 /// commands racing on one plan would otherwise overwrite each other's
 /// journal and double-move entries.
-fn lock_plan(id: &str) -> Result<std::fs::File> {
+struct PlanLock(std::fs::File);
+
+impl Drop for PlanLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+        // SAFETY: the descriptor remains live until this guard finishes dropping.
+        // Explicit unlock also releases transient copies inherited by an
+        // unrelated child between fork and exec in another thread.
+        unsafe { libc::flock(self.0.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+fn lock_plan(id: &str) -> Result<PlanLock> {
     use std::os::unix::io::AsRawFd;
     let path = plan_lock_path(id)?;
     if let Some(parent) = path.parent() {
@@ -185,7 +197,7 @@ fn lock_plan(id: &str) -> Result<std::fs::File> {
     if ret != 0 {
         anyhow::bail!("plan {id} is locked by another process; retry when it finishes");
     }
-    Ok(file)
+    Ok(PlanLock(file))
 }
 
 fn load_plan(id: &str) -> Result<RmPlan> {
@@ -1657,6 +1669,22 @@ mod tests {
         let restored_twice = restore(&preview.id).unwrap();
         assert!(restored_twice.targets.iter().all(|t| t.restored));
         assert!(fa.exists() && fb.exists());
+    }
+
+    #[test]
+    fn plan_lock_release_is_not_delayed_by_an_inherited_descriptor() {
+        let root = temp_root();
+        let _state = with_state_dir(root.path());
+        let lock = lock_plan("inherited").unwrap();
+        // try_clone shares the open file description, as a forked child does.
+        let inherited = lock.0.try_clone().unwrap();
+        assert!(lock_plan("inherited").is_err());
+        drop(lock);
+        let next = lock_plan("inherited").unwrap();
+        drop(inherited);
+        assert!(lock_plan("inherited").is_err());
+        drop(next);
+        assert!(lock_plan("inherited").is_ok());
     }
 
     #[test]
