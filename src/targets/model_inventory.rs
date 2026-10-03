@@ -61,7 +61,7 @@ struct ReceiptFile {
     size_bytes: u64,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 struct Artifact {
     path: PathBuf,
@@ -74,6 +74,8 @@ struct Artifact {
     allocated_bytes: Option<u64>,
     eligible: bool,
     blockers: Vec<String>,
+    #[serde(skip)]
+    stamp: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -152,6 +154,7 @@ fn discover(
     depth: u32,
     manifests: &mut BTreeSet<PathBuf>,
     loose: &mut BTreeSet<PathBuf>,
+    issues: &mut Vec<String>,
 ) -> Result<()> {
     real_directory(root)?;
     let device = fs::symlink_metadata(root)?.dev();
@@ -159,23 +162,32 @@ fn discover(
         if path.file_name().is_some_and(excluded) {
             continue;
         }
-        let meta = fs::symlink_metadata(&path)?;
-        ensure!(
-            !meta.is_symlink() && meta.dev() == device,
-            "unobservable model entry: {}",
-            path.display()
-        );
-        if meta.is_file() {
-            let name = path.file_name().unwrap_or_default().to_string_lossy();
-            if name == "ready.json" || (name.starts_with(".ready-") && name.ends_with(".json")) {
-                manifests.insert(path);
-            } else if name.ends_with(".gguf") {
-                loose.insert(path);
+        let mut inspect = || -> Result<()> {
+            let meta = fs::symlink_metadata(&path)?;
+            ensure!(
+                !meta.is_symlink() && meta.dev() == device,
+                "symlink or cross-device model entry"
+            );
+            if meta.is_file() {
+                let name = path.file_name().unwrap_or_default().to_string_lossy();
+                if name == "ready.json" || (name.starts_with(".ready-") && name.ends_with(".json"))
+                {
+                    manifests.insert(path.clone());
+                } else if name.ends_with(".gguf") {
+                    loose.insert(path.clone());
+                }
+            } else if meta.is_dir() && depth > 0 {
+                // Include abandoned staging and snapshots without a ready receipt.
+                loose.insert(path.clone());
+                discover(&path, remaining, depth - 1, manifests, loose, issues)?;
+            } else if !meta.is_dir() {
+                anyhow::bail!("special model entry");
             }
-        } else if meta.is_dir() && depth > 0 {
-            discover(&path, remaining, depth - 1, manifests, loose)?;
-        } else if !meta.is_dir() {
-            anyhow::bail!("special model entry: {}", path.display());
+            Ok(())
+        };
+        if let Err(error) = inspect() {
+            issues.push(format!("{}: {error}", path.display()));
+            loose.insert(path);
         }
     }
     Ok(())
@@ -187,14 +199,15 @@ fn timestamp(value: &str) -> Result<SystemTime> {
 
 impl InventorySettings {
     fn policy(&self) -> Result<Settings> {
-        Settings::parse(
+        Settings::parse_with_roots(
             &serde_json::json!({ "roots": self.roots, "pinnedPaths": self.pinned_paths,
             "minAgeDays": self.min_age_days.unwrap_or(7), "maxEntries": self.max_entries.unwrap_or(1_000_000), "maxDepth": self.max_depth.unwrap_or(64) }),
+            false,
         )
     }
 
-    fn inventory(&self) -> Result<Inventory> {
-        let policy = self.policy()?;
+    fn validate(&self) -> Result<()> {
+        self.policy()?;
         for model in &self.models {
             ensure!(
                 model.path.is_absolute()
@@ -211,7 +224,29 @@ impl InventorySettings {
             for name in &model.files {
                 safe_relative(name)?;
             }
+            if let Some(lock) = &model.lock_path {
+                ensure!(
+                    lock.is_absolute()
+                        && !lock
+                            .components()
+                            .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
+                    "invalid model lock path"
+                );
+                ensure!(
+                    !self
+                        .models
+                        .iter()
+                        .any(|m| m.files.is_empty() && lock.starts_with(&m.path)),
+                    "persistent model lock cannot live inside a snapshot"
+                );
+            }
         }
+        Ok(())
+    }
+
+    fn inventory(&self) -> Result<Inventory> {
+        self.validate()?;
+        let policy = self.policy()?;
         let mut result = Inventory {
             schema_version: 1,
             complete: true,
@@ -222,11 +257,19 @@ impl InventorySettings {
         let mut loose = BTreeSet::new();
         for root in &self.roots {
             let mut remaining = policy.max_entries;
-            if let Err(error) = discover(root, &mut remaining, 1, &mut manifests, &mut loose) {
-                result.complete = false;
+            if let Err(error) = discover(
+                root,
+                &mut remaining,
+                1,
+                &mut manifests,
+                &mut loose,
+                &mut result.issues,
+            ) {
                 result.issues.push(format!("{}: {error}", root.display()));
+                loose.insert(root.clone());
             }
         }
+        result.complete = result.issues.is_empty();
         for manifest in manifests {
             let base = manifest.parent().context("receipt has no parent")?;
             match receipt(&manifest) {
@@ -277,6 +320,7 @@ impl InventorySettings {
                         allocated_bytes: None,
                         eligible: false,
                         blockers: vec![error.to_string()],
+                        stamp: None,
                     });
                 }
             }
@@ -314,9 +358,12 @@ impl InventorySettings {
             .iter()
             .filter(|m| {
                 if m.files.is_empty() {
-                    m.path == path
+                    m.path == path || path.starts_with(&m.path) || m.path.starts_with(&path)
                 } else {
-                    m.files.iter().any(|f| m.path.join(f) == path)
+                    m.files.iter().any(|f| {
+                        let file = m.path.join(f);
+                        file == path || file.starts_with(&path)
+                    })
                 }
             })
             .collect();
@@ -327,6 +374,8 @@ impl InventorySettings {
             || models.iter().any(|m| m.lifecycle == Lifecycle::Active);
         let lifecycle = if pinned {
             Lifecycle::Active
+        } else if models.is_empty() && receipt.is_none() {
+            Lifecycle::Partial
         } else if models.is_empty() {
             Lifecycle::Orphaned
         } else if models.iter().all(|m| m.lifecycle == Lifecycle::Retired) {
@@ -345,6 +394,7 @@ impl InventorySettings {
             allocated_bytes: None,
             eligible: false,
             blockers: vec![],
+            stamp: None,
         };
         let scan = policy.root_for(&artifact.path).and_then(|root| {
             guard_retention_path(&artifact.path, root)?;
@@ -353,6 +403,7 @@ impl InventorySettings {
         });
         match scan {
             Ok(scan) => {
+                artifact.stamp = Some(scan.stamp);
                 artifact.logical_bytes = Some(scan.logical_bytes);
                 artifact.allocated_bytes = Some(scan.allocated_bytes);
                 if !scan.complete {
@@ -504,6 +555,21 @@ impl Variant for ManagedVariant {
     }
     fn apply_with_settings(&self, apply: bool, force: bool, value: &Value) -> Result<ApplyReport> {
         let settings: InventorySettings = serde_json::from_value(value.clone())?;
+        settings.validate()?;
+        // Hold producer/consumer leases before any deletion eligibility scan.
+        // A reader cannot start between process inspection and reconciliation.
+        let mut locks = vec![];
+        if apply && force && self.prune {
+            let lock_paths: BTreeSet<_> = settings
+                .models
+                .iter()
+                .filter(|m| m.lifecycle == Lifecycle::Retired && m.files.is_empty())
+                .filter_map(|m| m.lock_path.as_deref())
+                .collect();
+            for path in lock_paths {
+                locks.push(crate::model_lock::exclusive(path)?);
+            }
+        }
         let inventory = settings.inventory()?;
         let mut policy = settings.policy()?;
         policy.paths = inventory
@@ -513,23 +579,15 @@ impl Variant for ManagedVariant {
             .map(|a| a.path.clone())
             .collect();
         policy.retired_paths = policy.paths.clone();
-        let mut locks = vec![];
         if apply && force && self.prune {
-            let lock_paths: BTreeSet<_> = settings
-                .models
-                .iter()
-                .filter(|m| policy.paths.contains(&m.path))
-                .filter_map(|m| m.lock_path.as_deref())
-                .collect();
-            for path in lock_paths {
-                locks.push(crate::model_lock::exclusive(path)?);
-            }
             let fresh = settings.inventory()?;
             ensure!(
                 policy
                     .paths
                     .iter()
-                    .all(|p| fresh.artifacts.iter().any(|a| &a.path == p && a.eligible)),
+                    .all(|p| fresh.artifacts.iter().any(|a| &a.path == p
+                        && a.eligible
+                        && inventory.artifacts.iter().any(|old| old == a))),
                 "model inventory changed before cleanup"
             );
         }

@@ -29,6 +29,7 @@
   );
   targetsJson = pkgs.writeText "doty-targets.json" (builtins.toJSON {
     targets = targetEntries;
+    requirements = cfg.inspectionRequirements;
   });
 in {
   options.services.doty = {
@@ -42,6 +43,17 @@ in {
       default = "weekly";
       example = "daily";
       description = "Systemd OnCalendar schedule for combined cleanup timer";
+    };
+    inspectionRequirements = lib.mkOption {
+      type = lib.types.listOf (lib.types.submodule {
+        options = {
+          name = lib.mkOption {type = lib.types.str;};
+          variant = lib.mkOption {type = lib.types.str;};
+          path = lib.mkOption {type = lib.types.str;};
+        };
+      });
+      default = [];
+      description = "Required read-only provider/path coverage checked by doty doctor.";
     };
     targets = lib.mkOption {
       type = lib.types.attrsOf (lib.types.submodule {

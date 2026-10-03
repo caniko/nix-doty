@@ -13,9 +13,23 @@ pub struct ConfiguredTarget {
 }
 
 #[derive(Debug, Deserialize)]
-struct TargetDocument {
+pub struct TargetDocument {
     #[serde(default)]
-    targets: Vec<ConfiguredTarget>,
+    pub targets: Vec<ConfiguredTarget>,
+    #[serde(default)]
+    pub requirements: Vec<Requirement>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Requirement {
+    pub name: String,
+    pub variant: String,
+    pub path: String,
+}
+
+pub fn load_document(path: &str) -> Result<TargetDocument> {
+    let content = std::fs::read_to_string(path).with_context(|| format!("cannot read {path}"))?;
+    serde_json::from_str(&content).with_context(|| format!("cannot parse {path}"))
 }
 
 pub fn load_targets(path: &str) -> Result<Vec<ConfiguredTarget>> {

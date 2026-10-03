@@ -57,7 +57,8 @@ pub use pink_raven_workers::PINK_RAVEN_WORKERS;
 pub use podman_images::PODMAN_IMAGES;
 pub use qbittorrent_torrents::QBITTORRENT_TORRENTS;
 pub use retention::{
-    CARGO_BUILDS, MANAGED_MODELS, MODEL_DIRECTORIES, PACKAGE_CACHES, RETAINED_STATE,
+    CARGO_BUILDS, MANAGED_MODELS, MODEL_DIRECTORIES, NIX_BUILDS, PACKAGE_CACHES, RETAINED_STATE,
+    SERVICE_STORAGE,
 };
 pub use sccache_garage::SCCACHE_GARAGE;
 pub use steampipe_state::STEAMPIPE_STATE;

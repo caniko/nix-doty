@@ -78,6 +78,117 @@ fn retained_and_shared_consumer_models_are_not_retired_by_disabled_profiles() {
     assert_eq!(report["artifacts"][0]["eligible"], false);
 }
 
+#[test]
+fn blocked_model_sibling_does_not_hide_later_download_receipts() {
+    let root = tempfile::tempdir().unwrap();
+    symlink("/missing", root.path().join("aaa-blocked")).unwrap();
+    let path = model_receipt(root.path(), "zzz-orphan");
+    let report = managed_report(serde_json::json!({"roots": [root.path()]}));
+    assert_eq!(report["complete"], false);
+    assert!(
+        report["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["path"] == path.to_string_lossy().as_ref())
+    );
+    assert!(report["issues"].to_string().contains("aaa-blocked"));
+}
+
+#[test]
+fn missing_discovery_root_stays_visible_with_independent_siblings() {
+    let root = tempfile::tempdir().unwrap();
+    let path = model_receipt(root.path(), "orphan");
+    let report = managed_report(
+        serde_json::json!({"roots": [root.path(), root.path().with_extension("missing")]}),
+    );
+    assert_eq!(report["complete"], false);
+    assert!(report["issues"].to_string().contains("missing"));
+    assert!(
+        report["artifacts"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|a| a["path"] == path.to_string_lossy().as_ref())
+    );
+}
+
+#[test]
+fn retained_descendant_consumer_protects_an_entire_retired_snapshot() {
+    let root = tempfile::tempdir().unwrap();
+    let path = model_receipt(root.path(), "old");
+    let report = managed_report(serde_json::json!({
+        "roots": [root.path()], "models": [
+            {"id":"old", "path":path, "repo":"owner/model", "rev":"abc", "lifecycle":"retired", "retiredAt":"2026-09-18T00:00:00Z", "lockPath":root.path().join("old.lock")},
+            {"id":"consumer", "path":path, "files":["weights.safetensors"], "repo":"owner/model", "rev":"abc", "lifecycle":"active"}
+        ]
+    }));
+    let artifact = report["artifacts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a["path"] == path.to_string_lossy().as_ref())
+        .unwrap();
+    assert_eq!(artifact["lifecycle"], "active");
+    assert_eq!(artifact["eligible"], false);
+}
+
+#[test]
+fn managed_prune_refuses_a_serving_reader_without_mutating_the_snapshot() {
+    use std::os::fd::AsRawFd;
+    let root = tempfile::tempdir().unwrap();
+    let path = model_receipt(root.path(), "old");
+    for entry in [
+        path.join("ready.json"),
+        path.join("weights.safetensors"),
+        path.clone(),
+    ] {
+        backdate(&entry);
+    }
+    let lock = root.path().join("old.doty-lock");
+    let reader = fs::File::create(&lock).unwrap();
+    // SAFETY: a live descriptor owns the same shared lease as the serve wrapper.
+    assert_eq!(
+        unsafe { libc::flock(reader.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) },
+        0
+    );
+    let settings = serde_json::json!({"roots": [root.path()], "models": [{
+        "id": "old", "path": path, "repo": "owner/model", "rev": "abc",
+        "lifecycle": "retired", "retiredAt": "2000-01-01T00:00:00Z", "lockPath": lock
+    }]});
+    let variant = crate::registry::find_variant("managed-models", "prune-retired").unwrap();
+    let error = variant
+        .apply_with_settings(true, true, &settings)
+        .unwrap_err();
+    assert!(error.to_string().contains("lock held"));
+    assert!(path.join("weights.safetensors").exists());
+    assert!(!root.path().join(".doty-quarantine").exists());
+}
+
+#[test]
+fn future_retirement_and_retain_until_do_not_authorize_removal() {
+    let root = tempfile::tempdir().unwrap();
+    let path = model_receipt(root.path(), "retained");
+    for (retired, until) in [
+        ("2999-01-01T00:00:00Z", Value::Null),
+        (
+            "2000-01-01T00:00:00Z",
+            Value::String("2999-01-01T00:00:00Z".into()),
+        ),
+    ] {
+        let report = managed_report(serde_json::json!({"roots": [root.path()], "models": [{
+            "id": "retained", "path": path, "repo": "owner/model", "rev": "abc", "lifecycle": "retired",
+            "retiredAt": retired, "retainUntil": until, "lockPath": root.path().join("lock")
+        }]}));
+        assert_eq!(report["artifacts"][0]["eligible"], false);
+        assert!(
+            report["artifacts"][0]["blockers"]
+                .to_string()
+                .contains("not elapsed")
+        );
+    }
+}
+
 fn settings(root: &Path, paths: &[&str]) -> Settings {
     let mut settings = Settings::parse(&serde_json::json!({
         "roots": [root],
@@ -311,6 +422,48 @@ fn changed_descendant_invalidates_prepared_candidate() {
     fs::write(root.path().join("cache/old/item"), b"new work").unwrap();
     assert!(recheck(&selected.candidates[0], &policy).is_err());
     assert!(root.path().join("cache/old/item").exists());
+}
+
+#[test]
+fn same_size_file_edit_with_restored_mtime_invalidates_candidate() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join("cache")).unwrap();
+    let path = root.path().join("cache/old");
+    fs::write(&path, b"old").unwrap();
+    backdate(&path);
+    let policy = settings(root.path(), &["cache"]);
+    let selected = select(Kind::Packages, &policy).unwrap();
+    let original = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, b"new").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(original))
+        .unwrap();
+    assert!(recheck(&selected.candidates[0], &policy).is_err());
+    assert_eq!(fs::read(path).unwrap(), b"new");
+}
+
+#[test]
+fn quarantine_rename_preserves_the_file_content_stamp() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join("cache")).unwrap();
+    let path = root.path().join("cache/old");
+    fs::write(&path, b"old").unwrap();
+    backdate(&path);
+    let policy = settings(root.path(), &["cache"]);
+    let mut remaining = policy.max_entries;
+    let original = scan_tree(&path, &policy, &mut remaining).unwrap();
+    let destination = root.path().join("quarantined");
+    fs::rename(&path, &destination).unwrap();
+    let mut remaining = policy.max_entries;
+    let renamed = scan_tree(&destination, &policy, &mut remaining).unwrap();
+    assert!(renamed.matches_after_rename(&original));
+    fs::write(&destination, b"new work").unwrap();
+    let mut remaining = policy.max_entries;
+    let changed = scan_tree(&destination, &policy, &mut remaining).unwrap();
+    assert!(!changed.matches_after_rename(&original));
 }
 
 #[test]
