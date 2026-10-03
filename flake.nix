@@ -93,7 +93,11 @@
       flake = {
         # Consumers can gate target configuration while upgrading an older pin.
         lib.persistentRetention = true;
+        lib.managedModels = true;
+        lib.persistentStorage = true;
+        lib.inspectionCoverage = true;
         lib.scratchAssessmentVersion = 1;
+        lib.nixOperationVersion = 1;
         crossPackages."x86_64-linux"."aarch64-linux".doty = self.packages."x86_64-linux"."doty-aarch64-linux";
         nixosModules.default = {pkgs, ...}: {
           imports = [./module/default.nix];

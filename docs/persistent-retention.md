@@ -118,3 +118,44 @@ it is not proof that all of it came from Doty. Quarantine always reports zero.
 
 The flake exports `lib.persistentRetention = true` for downstream capability gating
 while an older Doty revision remains pinned.
+
+## Managed downloads
+
+`managed-models/inventory` discovers `ready.json` and `.ready-*.json` under
+configured `roots`. It reconciles schema-1 Canix/Infernix download receipts with
+`models` declarations (`id`, `path`, `repo`, `rev`, `lifecycle`, optional `files`,
+`retiredAt`, `retainUntil`, `lockPath`) and `pinnedPaths`. Active consumers and
+retained comparison models protect shared weights and projectors. Unknown receipts
+remain orphaned; staging/unverified snapshots remain partial. Missing/inaccessible
+roots and entries stay visible with blockers while independent siblings continue.
+
+`managed-models/prune-retired` requires `--apply --force`, a verified receipt,
+elapsed RFC3339 retirement/retention dates, descendant age and process inspection.
+It only removes whole snapshots; shared-directory GGUF files remain report-only.
+It holds an exclusive persistent-inode lock through fresh inventory, quarantine
+and purge. Infernix publishers hold an exclusive lock, and serving children hold
+shared locks across exec. The default anchor is `<modelDir>.doty-lock` (GGUF uses
+`<modelsDir>.doty-lock`). Never unlink these anchors. Revalidation compares the
+receipt/tree identity to the original preview after acquiring locks.
+
+Consumers gate this provider on `lib.managedModels` and the producer's
+`lib.modelLocks` API. Download receipt discovery alone never grants removal.
+
+## Coverage and service storage
+
+`services.doty.inspectionRequirements` writes required `{name, variant, path}`
+coverage into the target document. `doctor --expected-config candidate.json`
+compares the activated targets/settings to an evaluated candidate and reports
+missing providers, uncovered paths and stale configuration with a failing exit.
+Failed status inspections remain rows with unknown size and a structured error.
+Service path reports expose completeness, bounded byte lower bounds and per-path
+issues; missing or unreadable paths never contribute a fictitious zero total.
+
+`nix-builds/abandoned-report` discovers `nix-<PID>-<suffix>` entries under explicit
+roots and reports PID existence, process references and bounded footprint.
+PID absence is discovery evidence, never deletion authority.
+`service-storage/disk-report` reports configured live stores and their
+`retentionOwner`/`retentionPolicy`. Attic, Kvrocks and PostgreSQL own their garbage
+collection, compaction and backup-chain retention; Doty does not unlink their
+live storage. These providers export `lib.persistentStorage`; coverage exports
+`lib.inspectionCoverage`.

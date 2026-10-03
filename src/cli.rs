@@ -17,6 +17,15 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Inspect tracked Nix objects and their reasons; read-only, never releases roots or runs GC
+    NixStore {
+        /// Exact store path, to inspect all recorded consumers
+        #[arg(long)]
+        path: Option<String>,
+        /// Bounded journal pagination cursor
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
     /// Analyze agent scratch space without reading contents or deleting anything
     Analyze {
         #[command(subcommand)]
@@ -69,6 +78,9 @@ pub enum Command {
         /// Path to the NixOS-declared targets.json
         #[arg(long, default_value = "/etc/doty/targets.json")]
         config: String,
+        /// Compare activated configuration to an evaluated candidate document
+        #[arg(long)]
+        expected_config: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -148,6 +160,11 @@ impl Cli {
     pub fn run(self) -> Result<()> {
         let ledger = self.ledger.config()?;
         match self.command {
+            Command::NixStore { path, offset } => {
+                let result = crate::nix_ledger::inspect(path.as_deref(), offset)?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                Ok(())
+            }
             Command::Analyze { agent } => agent.run(ledger.as_ref()),
             Command::List { json } => crate::commands::list(json),
             Command::Status {
@@ -172,7 +189,11 @@ impl Cli {
                 json,
                 ledger.as_ref(),
             ),
-            Command::Doctor { config, json } => crate::commands::doctor(&config, json),
+            Command::Doctor {
+                config,
+                expected_config,
+                json,
+            } => crate::commands::doctor(&config, expected_config.as_deref(), json),
             Command::Rm {
                 root,
                 apply,

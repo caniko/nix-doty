@@ -4,10 +4,17 @@
 
 ### Fixed
 
+- Model discovery continues past blocked siblings and missing roots; active
+  descendant consumers protect entire snapshots. Failed inspections remain
+  visible, and incomplete storage measurements carry unknown totals.
+
 - Nix builds provide Git and Linux mount inspection for retention tests and
   pin these tools in the installed runtime wrapper.
 
 ### Added
+
+- Required inspection coverage and `doctor --expected-config` activation-drift
+  diagnostics; read-only Nix-build and application-owned service-storage reports.
 
 - Chaosbox scratch-ledger integration for analysis, quarantine and purge, with
   bounded refreshes and explicit release checks that preserve unfinished work.
