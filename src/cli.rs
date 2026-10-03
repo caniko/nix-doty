@@ -17,6 +17,15 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Inspect tracked Nix objects and their reasons; read-only, never releases roots or runs GC
+    NixStore {
+        /// Exact store path, to inspect all recorded consumers
+        #[arg(long)]
+        path: Option<String>,
+        /// Bounded journal pagination cursor
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+    },
     /// Analyze agent scratch space without reading contents or deleting anything
     Analyze {
         #[command(subcommand)]
@@ -151,6 +160,11 @@ impl Cli {
     pub fn run(self) -> Result<()> {
         let ledger = self.ledger.config()?;
         match self.command {
+            Command::NixStore { path, offset } => {
+                let result = crate::nix_ledger::inspect(path.as_deref(), offset)?;
+                println!("{}", serde_json::to_string_pretty(&result)?);
+                Ok(())
+            }
             Command::Analyze { agent } => agent.run(ledger.as_ref()),
             Command::List { json } => crate::commands::list(json),
             Command::Status {

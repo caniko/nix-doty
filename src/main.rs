@@ -7,6 +7,7 @@ pub mod framework;
 pub mod guard;
 mod model_lock;
 pub mod mount;
+mod nix_ledger;
 pub mod reclaim;
 pub mod registry;
 pub mod rm;
