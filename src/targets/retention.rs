@@ -318,7 +318,19 @@ struct Scan {
     entries: u64,
     newest: Option<SystemTime>,
     stamp: u64,
+    root_ctime: (i64, i64),
     complete: bool,
+}
+
+impl Scan {
+    fn matches_after_rename(&self, original: &Self) -> bool {
+        // Quarantine's rename changes only the candidate root's ctime.
+        // Pre-rename checks compare it as well, including single-file candidates.
+        Self {
+            root_ctime: original.root_ctime,
+            ..self.clone()
+        } == *original
+    }
 }
 
 struct Candidate {
@@ -383,9 +395,10 @@ fn scan_tree(path: &Path, settings: &Settings, remaining: &mut u64) -> Result<Sc
             meta.mtime_nsec(),
         )
             .hash(&mut hasher);
-        // Renaming the candidate into quarantine changes its own ctime.
-        // Descendant ctimes still detect same-size edits with restored mtimes.
-        if depth > 0 {
+        if depth == 0 {
+            scan.root_ctime = (meta.ctime(), meta.ctime_nsec());
+        } else {
+            // Descendant ctimes remain stable across the quarantine rename.
             (meta.ctime(), meta.ctime_nsec()).hash(&mut hasher);
         }
         match meta.modified() {
@@ -897,7 +910,7 @@ impl RetentionVariant {
                     let mut remaining = settings.max_entries;
                     let scan = scan_tree(destination, settings, &mut remaining)?;
                     ensure!(
-                        scan.complete && scan == candidate.scan,
+                        scan.complete && scan.matches_after_rename(&candidate.scan),
                         "candidate changed during quarantine; retained in plan {}",
                         plan.id
                     );

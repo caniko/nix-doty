@@ -425,6 +425,48 @@ fn changed_descendant_invalidates_prepared_candidate() {
 }
 
 #[test]
+fn same_size_file_edit_with_restored_mtime_invalidates_candidate() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join("cache")).unwrap();
+    let path = root.path().join("cache/old");
+    fs::write(&path, b"old").unwrap();
+    backdate(&path);
+    let policy = settings(root.path(), &["cache"]);
+    let selected = select(Kind::Packages, &policy).unwrap();
+    let original = fs::metadata(&path).unwrap().modified().unwrap();
+    fs::write(&path, b"new").unwrap();
+    fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(fs::FileTimes::new().set_modified(original))
+        .unwrap();
+    assert!(recheck(&selected.candidates[0], &policy).is_err());
+    assert_eq!(fs::read(path).unwrap(), b"new");
+}
+
+#[test]
+fn quarantine_rename_preserves_the_file_content_stamp() {
+    let root = tempfile::tempdir().unwrap();
+    fs::create_dir_all(root.path().join("cache")).unwrap();
+    let path = root.path().join("cache/old");
+    fs::write(&path, b"old").unwrap();
+    backdate(&path);
+    let policy = settings(root.path(), &["cache"]);
+    let mut remaining = policy.max_entries;
+    let original = scan_tree(&path, &policy, &mut remaining).unwrap();
+    let destination = root.path().join("quarantined");
+    fs::rename(&path, &destination).unwrap();
+    let mut remaining = policy.max_entries;
+    let renamed = scan_tree(&destination, &policy, &mut remaining).unwrap();
+    assert!(renamed.matches_after_rename(&original));
+    fs::write(&destination, b"new work").unwrap();
+    let mut remaining = policy.max_entries;
+    let changed = scan_tree(&destination, &policy, &mut remaining).unwrap();
+    assert!(!changed.matches_after_rename(&original));
+}
+
+#[test]
 fn cross_target_incremental_and_release_only_outputs_are_supported() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir_all(root.path().join("cargo/release/.fingerprint")).unwrap();
