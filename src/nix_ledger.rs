@@ -3,9 +3,10 @@
 use anyhow::{Context, Result};
 use serde_json::Value;
 use std::{
-    io::Read,
+    io::{self, Read},
+    os::fd::AsRawFd,
     path::Path,
-    process::{Command, Stdio},
+    process::{Child, Command, ExitStatus, Stdio},
     time::{Duration, Instant},
 };
 
@@ -37,34 +38,13 @@ pub fn inspect(path: Option<&str>, offset: usize) -> Result<Value> {
     if let Some(path) = path {
         command.args(["--path", path]);
     }
-    let mut child = command
+    let child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .context("cannot start Chaosbox Nix reader")?;
-    let stdout = child.stdout.take().context("Nix reader stdout missing")?;
-    let stderr = child.stderr.take().context("Nix reader stderr missing")?;
-    let out = std::thread::spawn(move || bounded_read(stdout, MAX_BYTES));
-    let errors = std::thread::spawn(move || bounded_read(stderr, 8192));
-    let start = Instant::now();
-    let status = loop {
-        if let Some(status) = child.try_wait()? {
-            break status;
-        }
-        if start.elapsed() > Duration::from_secs(5) {
-            let _ = child.kill();
-            let _ = child.wait();
-            anyhow::bail!("Chaosbox Nix query timed out");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    let bytes = out
-        .join()
-        .map_err(|_| anyhow::anyhow!("Nix output reader failed"))??;
-    let error = errors
-        .join()
-        .map_err(|_| anyhow::anyhow!("Nix diagnostic reader failed"))??;
+    let (status, bytes, error) = read_query_output(child, Duration::from_secs(5))?;
     if !status.success() {
         anyhow::bail!(
             "Chaosbox Nix query failed: {}",
@@ -76,15 +56,76 @@ pub fn inspect(path: Option<&str>, offset: usize) -> Result<Value> {
     Ok(result)
 }
 
-fn bounded_read(mut reader: impl Read, limit: u64) -> std::io::Result<Vec<u8>> {
-    let mut bytes = Vec::new();
-    reader.by_ref().take(limit + 1).read_to_end(&mut bytes)?;
-    // Drain over-budget output so a writer cannot deadlock on its stdout pipe.
-    std::io::copy(&mut reader, &mut std::io::sink())?;
-    if bytes.len() as u64 > limit {
-        return Err(std::io::Error::other("Nix reader output budget exceeded"));
+fn nonblocking(reader: &impl AsRawFd) -> io::Result<()> {
+    // These owned pipe descriptors remain live for both fcntl calls.
+    let flags = unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0
+        || unsafe { libc::fcntl(reader.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+    {
+        return Err(io::Error::last_os_error());
     }
-    Ok(bytes)
+    Ok(())
+}
+
+fn read_available(reader: &mut impl Read, bytes: &mut Vec<u8>, limit: u64) -> io::Result<bool> {
+    let mut buffer = [0; 8192];
+    // Bound each drain, so a continuously writing descendant cannot starve the deadline.
+    for _ in 0..8 {
+        match reader.read(&mut buffer) {
+            Ok(0) => return Ok(true),
+            Ok(count) => {
+                if bytes.len() as u64 + count as u64 > limit {
+                    return Err(io::Error::other("Nix reader output budget exceeded"));
+                }
+                bytes.extend_from_slice(&buffer[..count]);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(false)
+}
+
+fn read_query_output(
+    mut child: Child,
+    timeout: Duration,
+) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
+    let result = (|| {
+        let mut stdout = child.stdout.take().context("Nix reader stdout missing")?;
+        let mut stderr = child.stderr.take().context("Nix reader stderr missing")?;
+        nonblocking(&stdout)?;
+        nonblocking(&stderr)?;
+        let start = Instant::now();
+        let mut status = None;
+        let (mut out, mut errors) = (Vec::new(), Vec::new());
+        let (mut out_closed, mut errors_closed) = (false, false);
+        loop {
+            if start.elapsed() >= timeout {
+                anyhow::bail!("Chaosbox Nix query timed out");
+            }
+            if !out_closed {
+                out_closed = read_available(&mut stdout, &mut out, MAX_BYTES)?;
+            }
+            if !errors_closed {
+                errors_closed = read_available(&mut stderr, &mut errors, 8192)?;
+            }
+            if status.is_none() {
+                status = child.try_wait()?;
+            }
+            if out_closed && errors_closed {
+                if let Some(status) = status {
+                    return Ok((status, out, errors));
+                }
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
 }
 
 fn validate(result: &Value, scope: &str, host: &str, store: &str) -> Result<()> {
@@ -112,6 +153,17 @@ fn validate(result: &Value, scope: &str, host: &str, store: &str) -> Result<()> 
                 .is_none_or(|roots| !roots.is_empty())
             || item["disposition"] != "needs-review"
             || item["gc_eligibility"] != "unknown"
+            || !matches!(
+                item["outcome"].as_str(),
+                Some("succeeded" | "failed" | "interrupted" | "not-started" | "unresolved")
+            )
+            || !matches!(
+                item["filesystem_presence"].as_str(),
+                Some("present" | "absent" | "unknown")
+            )
+            || item["registered_validity"] != "unknown"
+            || !item["objects"].is_array()
+            || !item["settled"].is_boolean()
         {
             anyhow::bail!("unsupported Nix cleanup obligation contract");
         }
@@ -123,6 +175,44 @@ fn validate(result: &Value, scope: &str, host: &str, store: &str) -> Result<()> 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn an_exited_reader_with_inherited_open_pipes_still_obeys_the_deadline() {
+        let child = Command::new("sh")
+            .args(["-c", "sleep 1 >&1 2>&2 & exit 0"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        let start = Instant::now();
+        let error = read_query_output(child, Duration::from_millis(100)).unwrap_err();
+        assert!(error.to_string().contains("timed out"));
+        assert!(start.elapsed() < Duration::from_millis(800));
+    }
+
+    #[test]
+    fn execution_and_filesystem_state_are_required_even_for_unresolved_items() {
+        let item = json!({"id":"one","reason":"needed","retention":"unrooted","owned_roots":[],"disposition":"needs-review","gc_eligibility":"unknown","outcome":"unresolved","filesystem_presence":"unknown","registered_validity":"unknown","objects":[],"settled":false});
+        let packet = json!({"version":1,"scope":"private:can","host":"atlas","store":"daemon","cleanup_authorized":false,"complete":true,"items":[item]});
+        assert!(validate(&packet, "private:can", "atlas", "daemon").is_ok());
+        for field in [
+            "outcome",
+            "filesystem_presence",
+            "registered_validity",
+            "objects",
+            "settled",
+        ] {
+            let mut incomplete = packet.clone();
+            incomplete["items"][0]
+                .as_object_mut()
+                .unwrap()
+                .remove(field);
+            assert!(
+                validate(&incomplete, "private:can", "atlas", "daemon").is_err(),
+                "{field}"
+            );
+        }
+    }
 
     #[test]
     fn rejects_foreign_or_mutating_cleanup_packets() {

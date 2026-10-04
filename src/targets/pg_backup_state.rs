@@ -25,6 +25,9 @@ pub static PG_BACKUP_STATE: &dyn Framework = &FRAMEWORK;
 
 struct BackupReport;
 impl Variant for BackupReport {
+    fn scan_paths(&self, settings: &Value) -> Vec<String> {
+        crate::targets::report::paths_from_settings(settings, DEFAULT_PATHS)
+    }
     fn name(&self) -> &'static str {
         "backup-report"
     }

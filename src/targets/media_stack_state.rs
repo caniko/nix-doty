@@ -34,6 +34,9 @@ pub static MEDIA_STACK_STATE: &dyn Framework = &FRAMEWORK;
 
 struct StateReport;
 impl Variant for StateReport {
+    fn scan_paths(&self, settings: &Value) -> Vec<String> {
+        crate::targets::report::paths_from_settings(settings, DEFAULT_PATHS)
+    }
     fn name(&self) -> &'static str {
         "state-report"
     }
