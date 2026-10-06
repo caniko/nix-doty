@@ -43,6 +43,8 @@ struct DoctorOutput {
     configured: Vec<DoctorTarget>,
     missing: Vec<String>,
     extra: Vec<String>,
+    coverage_gaps: Vec<String>,
+    configuration_drift: Vec<String>,
 }
 
 #[derive(Serialize)]
@@ -133,6 +135,16 @@ pub fn status(
                     v.framework().name(),
                     v.name()
                 );
+                inspections.push(Inspection {
+                    framework: v.framework().name(),
+                    variant: v.name(),
+                    path: settings.to_string(),
+                    size_bytes: None,
+                    age_oldest_days: None,
+                    would_remove: 0,
+                    notes: serde_json::json!({"complete": false, "error": e.to_string()})
+                        .to_string(),
+                });
             }
         }
     }
@@ -200,6 +212,7 @@ pub fn run(
     let variants = select_variants(target.as_deref(), variant.as_deref(), config_path)?;
 
     let mut reports = Vec::new();
+    let mut command_failed = false;
     for selected in &variants {
         let v = selected.variant;
         let tier = v.tier();
@@ -223,6 +236,7 @@ pub fn run(
         let settings = ledger_settings(selected, ledger)?;
         match v.apply_with_settings(apply, force, &settings) {
             Ok(r) => {
+                command_failed |= apply && !r.errors.is_empty();
                 if !json {
                     let prefix = if apply { "APPLIED" } else { "DRY-RUN" };
                     let status = apply_status(&r, apply);
@@ -262,6 +276,15 @@ pub fn run(
                     v.name(),
                     e
                 );
+                command_failed = true;
+                reports.push(ApplyReport {
+                    framework: v.framework().name(),
+                    variant: v.name(),
+                    removed: 0,
+                    freed_bytes: 0,
+                    skipped: 0,
+                    errors: vec![e.to_string()],
+                });
             }
         }
     }
@@ -278,6 +301,10 @@ pub fn run(
             })?
         );
     }
+    anyhow::ensure!(
+        !command_failed,
+        "one or more configured cleanup commands failed"
+    );
     Ok(())
 }
 
@@ -289,14 +316,14 @@ fn apply_status(report: &ApplyReport, apply: bool) -> &'static str {
     if !apply {
         return "dry-run";
     }
+    if !report.errors.is_empty() {
+        return "failed";
+    }
     if report.skipped > 0 {
         return "skipped";
     }
     if report.removed > 0 {
         return "applied";
-    }
-    if !report.errors.is_empty() {
-        return "failed";
     }
     "no-op"
 }
@@ -339,8 +366,47 @@ fn skipped_report(v: &dyn crate::framework::Variant, reason: &str) -> ApplyRepor
     }
 }
 
-pub fn doctor(config_path: &str, json: bool) -> Result<()> {
-    let configured_targets = config::load_targets(config_path)?;
+pub fn doctor(config_path: &str, expected_path: Option<&str>, json: bool) -> Result<()> {
+    let document = config::load_document(config_path)?;
+    let configured_targets = &document.targets;
+    let expected = expected_path.map(config::load_document).transpose()?;
+    let requirements = expected
+        .as_ref()
+        .map_or(&document.requirements, |doc| &doc.requirements);
+    let coverage_gaps = coverage_gaps(configured_targets, requirements);
+    let mut configuration_drift = Vec::new();
+    if let Some(expected) = &expected {
+        for target in &expected.targets {
+            if !configured_targets.contains(target) {
+                configuration_drift.push(format!(
+                    "missing/changed {}/{} settings",
+                    target.name, target.variant
+                ));
+            }
+        }
+        for target in configured_targets {
+            if !expected.targets.contains(target) {
+                configuration_drift
+                    .push(format!("stale {}/{} settings", target.name, target.variant));
+            }
+        }
+        for required in &expected.requirements {
+            if !document.requirements.contains(required) {
+                configuration_drift.push(format!(
+                    "missing/changed {}: {}/{} requirement",
+                    required.path, required.name, required.variant
+                ));
+            }
+        }
+        for required in &document.requirements {
+            if !expected.requirements.contains(required) {
+                configuration_drift.push(format!(
+                    "stale {}: {}/{} requirement",
+                    required.path, required.name, required.variant
+                ));
+            }
+        }
+    }
     let configured: Vec<DoctorTarget> = configured_targets
         .iter()
         .map(|t| DoctorTarget {
@@ -376,6 +442,7 @@ pub fn doctor(config_path: &str, json: bool) -> Result<()> {
         }
     }
 
+    let healthy = missing.is_empty() && coverage_gaps.is_empty() && configuration_drift.is_empty();
     if json {
         println!(
             "{}",
@@ -384,6 +451,8 @@ pub fn doctor(config_path: &str, json: bool) -> Result<()> {
                 configured,
                 missing,
                 extra,
+                coverage_gaps,
+                configuration_drift,
             })?
         );
     } else {
@@ -403,8 +472,42 @@ pub fn doctor(config_path: &str, json: bool) -> Result<()> {
                 println!("  📋 {e}");
             }
         }
+        for issue in coverage_gaps.iter().chain(&configuration_drift) {
+            println!("  ❌ {issue}");
+        }
     }
+    anyhow::ensure!(
+        healthy,
+        "doctor found missing provider coverage or configuration drift"
+    );
     Ok(())
+}
+
+fn coverage_gaps(
+    targets: &[ConfiguredTarget],
+    requirements: &[config::Requirement],
+) -> Vec<String> {
+    requirements
+        .iter()
+        .filter(|required| {
+            !targets.iter().any(|target| {
+                target.name == required.name
+                    && target.variant == required.variant
+                    // Roots are the actual scan surfaces for these providers.
+                    // Retention roots alone only constrain deletion containment.
+                    && registry::find_variant(&target.name, &target.variant).is_some_and(|variant| {
+                        if matches!(target.name.as_str(), "managed-models" | "nix-builds") {
+                            target.settings["roots"].as_array().is_some_and(|paths| {
+                                paths.iter().any(|path| path.as_str() == Some(&required.path))
+                            })
+                        } else {
+                            variant.scan_paths(&target.settings).contains(&required.path)
+                        }
+                    })
+            })
+        })
+        .map(|r| format!("uncovered {}: {}/{}", r.path, r.name, r.variant))
+        .collect()
 }
 
 pub(crate) fn select_variants(
@@ -462,51 +565,22 @@ fn configured_to_variants(configured: Vec<ConfiguredTarget>) -> Result<Vec<Selec
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn reclaim(
-    config_path: String,
-    mount: Option<String>,
-    threshold: f64,
-    min_free_bytes: Option<u64>,
-    min_free_pct: Option<f64>,
-    apply: bool,
-    force: bool,
-    all: bool,
-    json: bool,
-) -> Result<()> {
-    let config = crate::reclaim::ReclaimConfig {
-        config_path,
-        mount,
-        threshold_pct: threshold,
-        min_free_bytes,
-        min_free_pct,
-        apply,
-        force,
-        json,
-        all,
-    };
-
+pub fn reclaim(config: crate::reclaim::ReclaimConfig) -> Result<()> {
     let mut report = crate::reclaim::plan(&config)?;
 
-    if report.filesystems.is_empty() {
-        println!(
-            "No filesystems exceed the threshold ({}%). Nothing to reclaim.",
-            threshold
-        );
-        return Ok(());
+    if config.apply && !report.filesystems.is_empty() {
+        if let Err(error) = crate::reclaim::execute(&mut report, &config) {
+            report.errors.push(format!("{error:#}"));
+        }
     }
 
-    if apply {
-        crate::reclaim::execute(&mut report, &config)?;
-    }
-
-    if json {
+    if config.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", crate::reclaim::format_report_human(&report));
     }
 
-    Ok(())
+    crate::reclaim::ensure_success(&report)
 }
 
 fn human_size(bytes: u64) -> String {
@@ -638,4 +712,80 @@ pub fn purge(plan: &str, apply: bool, json: bool) -> Result<()> {
     let purged = crate::rm::purge_apply(plan)?;
     print_rm_plan(&purged, false, json)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+    #[test]
+    fn provider_name_alone_does_not_establish_path_coverage() {
+        let requirement = config::Requirement {
+            name: "managed-models".into(),
+            variant: "inventory".into(),
+            path: "/models".into(),
+        };
+        let mut target = ConfiguredTarget {
+            name: requirement.name.clone(),
+            variant: requirement.variant.clone(),
+            settings: serde_json::json!({"roots": ["/elsewhere"]}),
+        };
+        assert_eq!(
+            coverage_gaps(&[target.clone()], std::slice::from_ref(&requirement)).len(),
+            1
+        );
+        target.settings = serde_json::json!({"roots": ["/models"]});
+        assert!(coverage_gaps(&[target], &[requirement]).is_empty());
+    }
+
+    #[test]
+    fn unused_roots_cannot_establish_service_storage_coverage() {
+        let required = config::Requirement {
+            name: "service-storage".into(),
+            variant: "disk-report".into(),
+            path: "/store".into(),
+        };
+        let mut target = ConfiguredTarget {
+            name: required.name.clone(),
+            variant: required.variant.clone(),
+            settings: serde_json::json!({"roots": ["/store"]}),
+        };
+        assert_eq!(
+            coverage_gaps(&[target.clone()], std::slice::from_ref(&required)).len(),
+            1
+        );
+        target.settings = serde_json::json!({"paths": ["/store"]});
+        assert!(coverage_gaps(&[target], &[required]).is_empty());
+    }
+
+    #[test]
+    fn provider_defaults_count_until_the_scan_path_is_overridden() {
+        for (name, variant, path, override_settings) in [
+            (
+                "llama-models",
+                "disk-report",
+                "/data/scratch/models/gguf",
+                serde_json::json!({"modelsDir":"/elsewhere"}),
+            ),
+            (
+                "pg-backup-state",
+                "backup-report",
+                "/var/lib/postgresql",
+                serde_json::json!({"paths":["/elsewhere"]}),
+            ),
+        ] {
+            let required = config::Requirement {
+                name: name.into(),
+                variant: variant.into(),
+                path: path.into(),
+            };
+            let mut target = ConfiguredTarget {
+                name: name.into(),
+                variant: variant.into(),
+                settings: serde_json::json!({}),
+            };
+            assert!(coverage_gaps(&[target.clone()], std::slice::from_ref(&required)).is_empty());
+            target.settings = override_settings;
+            assert_eq!(coverage_gaps(&[target], &[required]).len(), 1);
+        }
+    }
 }

@@ -11,6 +11,14 @@ pub struct DirScan {
 }
 
 pub fn run(cmd: &[&str]) -> Result<String> {
+    if let Some(deadline) = crate::reclaim::runtime::current_deadline() {
+        let output = crate::reclaim::runtime::run_capture(cmd, deadline)?;
+        anyhow::ensure!(
+            !output.stdout_truncated,
+            "command {cmd:?} stdout exceeded the 32 KiB capture budget; refusing to use an incomplete result"
+        );
+        return Ok(output.stdout.trim().into());
+    }
     if cmd.is_empty() {
         anyhow::bail!("exec::run called with empty command");
     }

@@ -26,6 +26,9 @@ pub static LLAMA_MODELS: &dyn Framework = &FRAMEWORK;
 
 struct PruneUnpinned;
 impl Variant for PruneUnpinned {
+    fn scan_paths(&self, settings: &Value) -> Vec<String> {
+        vec![LlamaPolicy::from_settings(settings).models_dir]
+    }
     fn name(&self) -> &'static str {
         "prune-unpinned"
     }
@@ -112,6 +115,9 @@ impl Variant for PruneUnpinned {
 
 struct DiskReport;
 impl Variant for DiskReport {
+    fn scan_paths(&self, settings: &Value) -> Vec<String> {
+        vec![LlamaPolicy::from_settings(settings).models_dir]
+    }
     fn name(&self) -> &'static str {
         "disk-report"
     }

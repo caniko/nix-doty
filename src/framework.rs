@@ -32,6 +32,25 @@ pub struct ApplyReport {
     pub errors: Vec<String>,
 }
 
+/// Reclaim distinguishes an unmeasured yield from a measured zero.
+pub struct ReclaimResult {
+    pub freed_bytes: Option<u64>,
+    pub notices: Vec<String>,
+    pub errors: Vec<String>,
+    pub command_log: String,
+}
+
+impl From<ApplyReport> for ReclaimResult {
+    fn from(report: ApplyReport) -> Self {
+        Self {
+            freed_bytes: Some(report.freed_bytes),
+            notices: Vec::new(),
+            errors: report.errors,
+            command_log: String::new(),
+        }
+    }
+}
+
 pub trait Framework: Sync {
     fn name(&self) -> &'static str;
     fn summary(&self) -> &'static str;
@@ -44,6 +63,20 @@ pub trait Variant: Sync {
     fn tier(&self) -> Tier;
     fn inspect(&self) -> Result<Inspection>;
     fn apply(&self, apply: bool, force: bool) -> Result<ApplyReport>;
+    /// Pure scan-surface discovery for doctor, including provider-owned defaults.
+    fn scan_paths(&self, settings: &Value) -> Vec<String> {
+        let mut paths: Vec<String> = settings["paths"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        if let Some(path) = settings["path"].as_str() {
+            paths.push(path.to_owned());
+        }
+        paths
+    }
     fn inspect_with_settings(&self, _settings: &Value) -> Result<Inspection> {
         self.inspect()
     }
@@ -54,6 +87,17 @@ pub trait Variant: Sync {
         _settings: &Value,
     ) -> Result<ApplyReport> {
         self.apply(apply, force)
+    }
+    fn reclaim_with_settings(
+        &self,
+        force: bool,
+        settings: &Value,
+        context: &crate::reclaim::runtime::ActionContext<'_>,
+    ) -> Result<ReclaimResult> {
+        crate::reclaim::runtime::with_deadline(context.runtime.deadline, || {
+            self.apply_with_settings(true, force, settings)
+                .map(Into::into)
+        })
     }
 }
 

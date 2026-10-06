@@ -4,6 +4,32 @@ use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::path::Path;
 
+#[derive(Debug, Clone, Copy)]
+pub struct FilesystemStats {
+    pub total_bytes: u64,
+    pub used_bytes: u64,
+    pub available_bytes: u64,
+}
+
+/// Read live counters without scanning the store or rediscovering mount identities.
+pub fn stats(path: &str) -> Result<FilesystemStats> {
+    let path = std::ffi::CString::new(path)?;
+    let mut stats = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+    // SAFETY: path is NUL-terminated and stats points to writable statvfs storage.
+    if unsafe { libc::statvfs(path.as_ptr(), stats.as_mut_ptr()) } != 0 {
+        return Err(std::io::Error::last_os_error().into());
+    }
+    // SAFETY: a successful statvfs initialized the result.
+    let stats = unsafe { stats.assume_init() };
+    let block_size = u128::from(stats.f_frsize);
+    let bytes = |blocks: u128| u64::try_from(blocks.saturating_mul(block_size)).unwrap_or(u64::MAX);
+    Ok(FilesystemStats {
+        total_bytes: bytes(u128::from(stats.f_blocks)),
+        used_bytes: bytes(u128::from(stats.f_blocks).saturating_sub(u128::from(stats.f_bfree))),
+        available_bytes: bytes(u128::from(stats.f_bavail)),
+    })
+}
+
 #[derive(Debug, Clone)]
 pub struct MountInfo {
     pub mount_point: String,
@@ -97,6 +123,7 @@ pub fn read_mounts() -> Result<Vec<MountInfo>> {
 
     let out = exec::run_stdout(&[
         "df",
+        "-a",
         "--exclude-type=tmpfs",
         "--exclude-type=devtmpfs",
         "--exclude-type=devfs",
@@ -208,7 +235,7 @@ pub fn df(mount: &str) -> Result<MountInfo> {
         let available_bytes = parts[4].parse::<u64>().unwrap_or(0);
         let fstype = parts[5].to_string();
 
-        let identity = identities.get(mount);
+        let identity = identities.get(mount).or_else(|| identities.get(parts[1]));
         let device = identity.map_or_else(|| parts[0].to_string(), |i| i.device.clone());
 
         return Ok(MountInfo {
