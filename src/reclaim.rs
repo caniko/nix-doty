@@ -6,6 +6,9 @@ use crate::framework::Tier;
 use crate::mount::{self, MountInfo};
 use crate::registry;
 
+pub mod runtime;
+use runtime::{ActionContext, Limits, Runtime};
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ReclaimReport {
     pub schema_version: u32,
@@ -16,6 +19,7 @@ pub struct ReclaimReport {
     pub filesystems: Vec<ReclaimFilesystem>,
     pub unassigned_targets: Vec<ReclaimTarget>,
     pub health: Vec<HealthEntry>,
+    pub errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -38,6 +42,8 @@ pub struct ReclaimTotals {
     pub total_target_free_bytes: u64,
     pub total_goal_shortfall_bytes: u64,
     pub total_actual_freed_bytes: Option<u64>,
+    pub unknown_estimates: usize,
+    pub net_available_change_bytes: Option<i128>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -52,10 +58,13 @@ pub struct ReclaimFilesystem {
     pub available_bytes: u64,
     pub usage_pct: f64,
     pub target_free_bytes: u64,
+    pub required_available_bytes: u64,
     pub estimated_freed_bytes: u64,
     pub actual_freed_bytes: Option<u64>,
     pub final_available_bytes: Option<u64>,
     pub goal_met: Option<bool>,
+    pub net_available_change_bytes: Option<i128>,
+    pub measurement_error: Option<String>,
     pub targets: Vec<ReclaimTarget>,
 }
 
@@ -69,11 +78,12 @@ pub struct ReclaimTarget {
     pub scope: TargetScope,
     pub paths: Vec<String>,
     pub surfaces: Vec<String>,
-    pub estimated_freed_bytes: u64,
+    pub estimated_freed_bytes: Option<u64>,
     pub actual_freed_bytes: Option<u64>,
     pub status: &'static str,
     pub skip_reason: Option<String>,
     pub notes: String,
+    pub command_log: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -95,6 +105,7 @@ pub struct ReclaimConfig {
     pub force: bool,
     pub json: bool,
     pub all: bool,
+    pub limits: Limits,
 }
 
 impl Default for ReclaimConfig {
@@ -109,6 +120,7 @@ impl Default for ReclaimConfig {
             force: false,
             json: false,
             all: false,
+            limits: Limits::default(),
         }
     }
 }
@@ -139,6 +151,16 @@ pub fn plan(config: &ReclaimConfig) -> Result<ReclaimReport> {
             .is_none_or(|pct| pct.is_finite() && (0.0..=100.0).contains(&pct)),
         "minimum free percentage must be between 0 and 100"
     );
+    anyhow::ensure!(
+        config.min_free_bytes.is_none() || config.min_free_pct.is_none(),
+        "choose either minimum free bytes or percentage"
+    );
+    anyhow::ensure!(
+        (1..=86400).contains(&config.limits.timeout_seconds)
+            && config.limits.gc_max_bytes > 0
+            && config.limits.gc_pass_bytes > 0,
+        "reclaim budgets must be positive; timeout must be at most 86400 seconds"
+    );
     let all_mounts = mount::read_mounts()?;
     let groups = filesystem_groups(&all_mounts);
     let selected_keys = selected_filesystem_keys(config, &groups)?;
@@ -166,7 +188,7 @@ pub fn plan(config: &ReclaimConfig) -> Result<ReclaimReport> {
                         if resolved.target.status != "skipped" {
                             fs.estimated_freed_bytes = fs
                                 .estimated_freed_bytes
-                                .saturating_add(resolved.target.estimated_freed_bytes);
+                                .saturating_add(resolved.target.estimated_freed_bytes.unwrap_or(0));
                         }
                         fs.targets.push(resolved.target);
                     }
@@ -197,11 +219,11 @@ pub fn plan(config: &ReclaimConfig) -> Result<ReclaimReport> {
     }
 
     sort_report_targets(&mut filesystems, &mut unassigned_targets);
-    let totals = compute_totals(&filesystems, &unassigned_targets);
+    let totals = compute_totals(&filesystems, &unassigned_targets, config.threshold_pct);
     let health = compute_health(&filesystems, config.threshold_pct);
 
     Ok(ReclaimReport {
-        schema_version: 2,
+        schema_version: 3,
         threshold_pct: config.threshold_pct,
         apply: config.apply,
         force: config.force,
@@ -209,6 +231,7 @@ pub fn plan(config: &ReclaimConfig) -> Result<ReclaimReport> {
         filesystems,
         unassigned_targets,
         health,
+        errors: Vec::new(),
     })
 }
 
@@ -217,33 +240,182 @@ pub fn execute(report: &mut ReclaimReport, config: &ReclaimConfig) -> Result<()>
         return Ok(());
     }
 
-    let mut total_freed = 0u64;
+    let _signals = runtime::SignalGuard::install()?;
+    execute_with(report, config, mount::stats, |target, context| {
+        execute_target(target, config, context)
+    })
+}
 
+fn execute_with(
+    report: &mut ReclaimReport,
+    config: &ReclaimConfig,
+    mut measure: impl FnMut(&str) -> Result<mount::FilesystemStats>,
+    mut action: impl FnMut(&mut ReclaimTarget, &ActionContext<'_>) -> Result<()>,
+) -> Result<()> {
+    let runtime = Runtime::new(&config.limits);
     for fs in &mut report.filesystems {
-        let mut fs_freed = 0u64;
-        for target in &mut fs.targets {
-            fs_freed = fs_freed.saturating_add(execute_target(target, config)?);
+        refresh_filesystem_result(fs, &mut measure, &mut report.errors);
+        if let Some(available) = fs.final_available_bytes {
+            // Execution-time counters are the baseline; planning may have happened earlier.
+            fs.available_bytes = available;
+            fs.target_free_bytes = fs.required_available_bytes.saturating_sub(available);
+            fs.net_available_change_bytes = Some(0);
         }
-        fs.actual_freed_bytes = Some(fs_freed);
-        total_freed = total_freed.saturating_add(fs_freed);
-        refresh_filesystem_result(fs);
     }
-
+    for fs in &mut report.filesystems {
+        for index in 0..fs.targets.len() {
+            if fs.targets[index].status != "pending" {
+                continue;
+            }
+            let reason = runtime.stop_reason().or_else(|| {
+                if fs.measurement_error.is_some() {
+                    Some("filesystem availability could not be verified")
+                } else if fs.goal_met == Some(true) {
+                    Some("free-space goal already reached")
+                } else {
+                    None
+                }
+            });
+            if let Some(reason) = reason {
+                skip_target(&mut fs.targets[index], reason);
+                continue;
+            }
+            let path = fs.mounts[0].clone();
+            let context = ActionContext {
+                mount: Some(&path),
+                required_available_bytes: Some(fs.required_available_bytes),
+                limits: &config.limits,
+                runtime: &runtime,
+            };
+            if let Err(error) = action(&mut fs.targets[index], &context) {
+                fs.targets[index].status = "error";
+                fs.targets[index].notes = format!("{error:#}");
+            }
+            refresh_filesystem_result(fs, &mut measure, &mut report.errors);
+        }
+        fs.actual_freed_bytes = reported_yield(fs.targets.iter());
+    }
     for target in &mut report.unassigned_targets {
-        total_freed = total_freed.saturating_add(execute_target(target, config)?);
+        if target.status != "pending" {
+            continue;
+        }
+        let reason = runtime.stop_reason().or_else(|| {
+            if report
+                .filesystems
+                .iter()
+                .all(|fs| fs.goal_met == Some(true))
+            {
+                Some("free-space goals already reached")
+            } else if target.scope == TargetScope::Unassigned {
+                Some("no selected backing filesystem")
+            } else if report
+                .filesystems
+                .iter()
+                .any(|fs| fs.measurement_error.is_some())
+            {
+                Some("filesystem availability could not be verified")
+            } else {
+                None
+            }
+        });
+        if let Some(reason) = reason {
+            skip_target(target, reason);
+            continue;
+        }
+        let context = ActionContext {
+            mount: None,
+            required_available_bytes: None,
+            limits: &config.limits,
+            runtime: &runtime,
+        };
+        if let Err(error) = action(target, &context) {
+            target.status = "error";
+            target.notes = format!("{error:#}");
+        }
+        for fs in &mut report.filesystems {
+            refresh_filesystem_result(fs, &mut measure, &mut report.errors);
+        }
     }
-
-    report.totals.total_actual_freed_bytes = Some(total_freed);
-    report.totals = compute_totals(&report.filesystems, &report.unassigned_targets);
-    report.totals.total_actual_freed_bytes = Some(total_freed);
-
+    // Recheck every surface at completion, including effects from global actions and other writers.
+    for fs in &mut report.filesystems {
+        refresh_filesystem_result(fs, &mut measure, &mut report.errors);
+    }
+    if let Some(reason) = runtime.stop_reason() {
+        report.errors.push(reason.into());
+    }
+    report.totals = compute_totals(
+        &report.filesystems,
+        &report.unassigned_targets,
+        config.threshold_pct,
+    );
+    report.totals.total_actual_freed_bytes = reported_yield(
+        report
+            .filesystems
+            .iter()
+            .flat_map(|fs| fs.targets.iter())
+            .chain(report.unassigned_targets.iter()),
+    );
+    report.totals.net_available_change_bytes = report
+        .filesystems
+        .iter()
+        .map(|fs| fs.net_available_change_bytes)
+        .sum();
     report.health = compute_health(&report.filesystems, config.threshold_pct);
     Ok(())
 }
 
-fn execute_target(target: &mut ReclaimTarget, config: &ReclaimConfig) -> Result<u64> {
+fn skip_target(target: &mut ReclaimTarget, reason: &str) {
+    target.status = "skipped";
+    target.skip_reason = Some(reason.into());
+}
+
+fn reported_yield<'a>(targets: impl Iterator<Item = &'a ReclaimTarget>) -> Option<u64> {
+    targets
+        .filter(|target| {
+            matches!(
+                target.status,
+                "completed" | "completed-with-errors" | "error"
+            )
+        })
+        .try_fold(0u64, |sum, target| {
+            target
+                .actual_freed_bytes
+                .map(|bytes| sum.saturating_add(bytes))
+        })
+}
+
+/// Called after rendering, so failed applications still produce a complete JSON/human receipt.
+pub fn ensure_success(report: &ReclaimReport) -> Result<()> {
+    if !report.apply {
+        return Ok(());
+    }
+    let failures = report
+        .filesystems
+        .iter()
+        .flat_map(|fs| fs.targets.iter())
+        .chain(report.unassigned_targets.iter())
+        .filter(|target| matches!(target.status, "error" | "completed-with-errors"))
+        .count();
+    let unmet = report
+        .filesystems
+        .iter()
+        .filter(|fs| fs.goal_met != Some(true))
+        .count();
+    anyhow::ensure!(
+        failures == 0 && unmet == 0 && report.errors.is_empty(),
+        "reclaim incomplete: {failures} failed actions, {unmet} unmet or unverified filesystem goals, {} runtime errors",
+        report.errors.len()
+    );
+    Ok(())
+}
+
+fn execute_target(
+    target: &mut ReclaimTarget,
+    config: &ReclaimConfig,
+    context: &ActionContext<'_>,
+) -> Result<()> {
     if target.status != "pending" {
-        return Ok(0);
+        return Ok(());
     }
 
     let variant = match registry::find_variant(target.framework, target.variant) {
@@ -251,7 +423,7 @@ fn execute_target(target: &mut ReclaimTarget, config: &ReclaimConfig) -> Result<
         None => {
             target.status = "error";
             target.notes = "variant not found in registry".to_string();
-            return Ok(0);
+            return Ok(());
         }
     };
 
@@ -260,46 +432,54 @@ fn execute_target(target: &mut ReclaimTarget, config: &ReclaimConfig) -> Result<
             Tier::Confirm => {
                 target.status = "skipped";
                 target.skip_reason = Some("confirm tier requires --force".to_string());
-                return Ok(0);
+                return Ok(());
             }
             Tier::Risky => {
                 target.status = "skipped";
                 target.skip_reason = Some("risky tier requires --force".to_string());
-                return Ok(0);
+                return Ok(());
             }
             Tier::ReportOnly => {
                 target.status = "skipped";
                 target.skip_reason = Some("report-only target".to_string());
-                return Ok(0);
+                return Ok(());
             }
             Tier::Safe => {}
         }
     }
 
-    match variant.apply_with_settings(true, config.force, &target.settings) {
+    eprintln!("reclaim: {}/{}", target.framework, target.variant);
+    match variant.reclaim_with_settings(config.force, &target.settings, context) {
         Ok(apply_report) => {
-            target.actual_freed_bytes = Some(apply_report.freed_bytes);
+            target.actual_freed_bytes = apply_report.freed_bytes;
             target.status = if apply_report.errors.is_empty() {
                 "completed"
             } else {
                 "completed-with-errors"
             };
-            if !apply_report.errors.is_empty() {
-                target.notes = apply_report.errors.join("; ");
+            let notes = apply_report
+                .notices
+                .into_iter()
+                .chain(apply_report.errors)
+                .collect::<Vec<_>>()
+                .join("; ");
+            if !notes.is_empty() {
+                target.notes = notes;
             }
-            Ok(apply_report.freed_bytes)
+            target.command_log = apply_report.command_log;
+            Ok(())
         }
         Err(e) => {
             target.status = "error";
             target.notes = format!("{e:#}");
-            Ok(0)
+            Ok(())
         }
     }
 }
 
 fn empty_report(config: &ReclaimConfig) -> ReclaimReport {
     ReclaimReport {
-        schema_version: 2,
+        schema_version: 3,
         threshold_pct: config.threshold_pct,
         apply: config.apply,
         force: config.force,
@@ -307,6 +487,7 @@ fn empty_report(config: &ReclaimConfig) -> ReclaimReport {
         filesystems: Vec::new(),
         unassigned_targets: Vec::new(),
         health: Vec::new(),
+        errors: Vec::new(),
     }
 }
 
@@ -354,22 +535,30 @@ fn selected_filesystem_keys(
             .map(|group| group.representative.clone())
             .or_else(|| mount::df(&requested_mount).ok());
 
-        let Some(requested) = requested else {
-            return Ok(Vec::new());
-        };
+        let requested =
+            requested.ok_or_else(|| anyhow::anyhow!("mount not found: {requested_mount}"))?;
+        let key = fs_key(&requested);
+        anyhow::ensure!(
+            groups.iter().any(|group| group.key == key),
+            "mount is not on an eligible backing filesystem: {requested_mount}"
+        );
 
-        if requested.usage_pct() < config.threshold_pct && !config.all {
+        if !needs_reclaim(&requested, config) {
             return Ok(Vec::new());
         }
 
-        return Ok(vec![fs_key(&requested)]);
+        return Ok(vec![key]);
     }
 
     Ok(groups
         .iter()
-        .filter(|group| config.all || group.representative.usage_pct() >= config.threshold_pct)
+        .filter(|group| needs_reclaim(&group.representative, config))
         .map(|group| group.key.clone())
         .collect())
+}
+
+fn needs_reclaim(mount: &MountInfo, config: &ReclaimConfig) -> bool {
+    config.all || mount.available_bytes < required_available(mount.total_bytes, config)
 }
 
 fn filesystem_report(group: &FilesystemGroup, config: &ReclaimConfig) -> ReclaimFilesystem {
@@ -389,10 +578,13 @@ fn filesystem_report(group: &FilesystemGroup, config: &ReclaimConfig) -> Reclaim
         available_bytes: representative.available_bytes,
         usage_pct: representative.usage_pct(),
         target_free_bytes: compute_target_free(representative, config),
+        required_available_bytes: required_available(representative.total_bytes, config),
         estimated_freed_bytes: 0,
         actual_freed_bytes: None,
         final_available_bytes: None,
         goal_met: None,
+        net_available_change_bytes: None,
+        measurement_error: None,
         targets: Vec::new(),
     }
 }
@@ -470,14 +662,15 @@ fn inspect_targets(
             },
             surfaces: surfaces.into_iter().collect(),
             estimated_freed_bytes: if tier == Tier::ReportOnly {
-                0
+                Some(0)
             } else {
-                inspection.size_bytes.unwrap_or(0)
+                inspection.size_bytes
             },
             actual_freed_bytes: None,
             status,
             skip_reason,
             notes: inspection.notes,
+            command_log: String::new(),
         };
 
         targets.push(ResolvedTarget {
@@ -529,17 +722,19 @@ fn path_is_on_mount(path: &str, mount_point: &str) -> bool {
 }
 
 fn compute_target_free(mount: &MountInfo, config: &ReclaimConfig) -> u64 {
+    required_available(mount.total_bytes, config).saturating_sub(mount.available_bytes)
+}
+
+fn required_available(total_bytes: u64, config: &ReclaimConfig) -> u64 {
     if let Some(bytes) = config.min_free_bytes {
-        return bytes.saturating_sub(mount.available_bytes);
+        return bytes;
     }
 
     if let Some(pct) = config.min_free_pct {
-        let target = (mount.total_bytes as f64 * pct / 100.0) as u64;
-        return target.saturating_sub(mount.available_bytes);
+        return (total_bytes as f64 * pct / 100.0).ceil() as u64;
     }
 
-    let target = (mount.total_bytes as f64 * (100.0 - config.threshold_pct) / 100.0) as u64;
-    target.saturating_sub(mount.available_bytes)
+    (total_bytes as f64 * (100.0 - config.threshold_pct) / 100.0).ceil() as u64
 }
 
 fn compute_health(filesystems: &[ReclaimFilesystem], threshold_pct: f64) -> Vec<HealthEntry> {
@@ -568,20 +763,21 @@ fn compute_health(filesystems: &[ReclaimFilesystem], threshold_pct: f64) -> Vec<
 fn compute_totals(
     filesystems: &[ReclaimFilesystem],
     unassigned_targets: &[ReclaimTarget],
+    threshold_pct: f64,
 ) -> ReclaimTotals {
     let fs_target_count: usize = filesystems.iter().map(|fs| fs.targets.len()).sum();
     let fs_estimated: u64 = filesystems.iter().map(|fs| fs.estimated_freed_bytes).sum();
     let unassigned_estimated: u64 = unassigned_targets
         .iter()
         .filter(|target| target.status != "skipped")
-        .map(|target| target.estimated_freed_bytes)
+        .map(|target| target.estimated_freed_bytes.unwrap_or(0))
         .sum();
     let skipped_estimated_freed_bytes: u64 = filesystems
         .iter()
         .flat_map(|fs| fs.targets.iter())
         .chain(unassigned_targets.iter())
         .filter(|target| target.status == "skipped")
-        .map(|target| target.estimated_freed_bytes)
+        .map(|target| target.estimated_freed_bytes.unwrap_or(0))
         .sum();
     let skipped_targets = filesystems
         .iter()
@@ -593,14 +789,21 @@ fn compute_totals(
     let total_goal_shortfall_bytes: u64 = filesystems
         .iter()
         .map(|fs| {
-            fs.target_free_bytes
-                .saturating_sub(fs.estimated_freed_bytes)
+            if let Some(available) = fs.final_available_bytes {
+                fs.required_available_bytes.saturating_sub(available)
+            } else {
+                fs.target_free_bytes
+                    .saturating_sub(fs.estimated_freed_bytes)
+            }
         })
         .sum();
 
     ReclaimTotals {
         filesystems_total: filesystems.len(),
-        filesystems_over_threshold: filesystems.len(),
+        filesystems_over_threshold: filesystems
+            .iter()
+            .filter(|fs| fs.usage_pct >= threshold_pct)
+            .count(),
         targets_total: fs_target_count + unassigned_targets.len(),
         skipped_targets,
         total_estimated_freed_bytes: fs_estimated.saturating_add(unassigned_estimated),
@@ -608,23 +811,53 @@ fn compute_totals(
         total_target_free_bytes,
         total_goal_shortfall_bytes,
         total_actual_freed_bytes: None,
+        unknown_estimates: filesystems
+            .iter()
+            .flat_map(|fs| fs.targets.iter())
+            .chain(unassigned_targets.iter())
+            .filter(|target| target.status != "skipped" && target.estimated_freed_bytes.is_none())
+            .count(),
+        net_available_change_bytes: None,
     }
 }
 
 fn goal_met(fs: &ReclaimFilesystem, available: u64) -> bool {
-    available >= fs.available_bytes.saturating_add(fs.target_free_bytes)
+    available >= fs.required_available_bytes
 }
 
-fn refresh_filesystem_result(fs: &mut ReclaimFilesystem) {
-    let df = fs.mounts.first().and_then(|mount| mount::df(mount).ok());
-    if let Some(df) = df {
+fn refresh_filesystem_result(
+    fs: &mut ReclaimFilesystem,
+    measure: &mut impl FnMut(&str) -> Result<mount::FilesystemStats>,
+    errors: &mut Vec<String>,
+) {
+    let result = fs
+        .mounts
+        .first()
+        .ok_or_else(|| anyhow::anyhow!("filesystem has no mount path"))
+        .and_then(|path| measure(path));
+    if let Ok(df) = result {
         fs.final_available_bytes = Some(df.available_bytes);
         fs.goal_met = Some(goal_met(fs, df.available_bytes));
         fs.used_bytes = df.used_bytes;
-        fs.usage_pct = df.usage_pct();
+        fs.usage_pct = if df.total_bytes == 0 {
+            0.0
+        } else {
+            df.used_bytes as f64 / df.total_bytes as f64 * 100.0
+        };
+        fs.net_available_change_bytes =
+            Some(i128::from(df.available_bytes) - i128::from(fs.available_bytes));
+        fs.measurement_error = None;
     } else {
         fs.final_available_bytes = None;
-        fs.goal_met = Some(false);
+        fs.goal_met = None;
+        fs.net_available_change_bytes = None;
+        fs.measurement_error = result.err().map(|error| format!("{error:#}"));
+        if let Some(error) = &fs.measurement_error {
+            let message = format!("{} measurement failed: {error}", fs.device);
+            if !errors.contains(&message) {
+                errors.push(message);
+            }
+        }
     }
 }
 
@@ -689,26 +922,14 @@ fn tier_label(tier: Tier) -> &'static str {
 }
 
 fn fs_key(mount: &MountInfo) -> String {
-    match &mount.fsroot {
-        Some(fsroot) => format!(
-            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
-            mount.device, mount.maj_min, mount.fstype, fsroot
-        ),
-        None => format!(
-            "{}\u{1f}{}\u{1f}{}",
-            mount.device, mount.maj_min, mount.fstype
-        ),
-    }
+    format!(
+        "{}\u{1f}{}\u{1f}{}",
+        mount.device, mount.maj_min, mount.fstype
+    )
 }
 
 fn fs_key_from_report(fs: &ReclaimFilesystem) -> String {
-    match &fs.fsroot {
-        Some(fsroot) => format!(
-            "{}\u{1f}{}\u{1f}{}\u{1f}{}",
-            fs.device, fs.maj_min, fs.fstype, fsroot
-        ),
-        None => format!("{}\u{1f}{}\u{1f}{}", fs.device, fs.maj_min, fs.fstype),
-    }
+    format!("{}\u{1f}{}\u{1f}{}", fs.device, fs.maj_min, fs.fstype)
 }
 
 fn normalize_mount(mount: &str) -> String {
@@ -725,23 +946,23 @@ pub fn format_report_human(report: &ReclaimReport) -> String {
 
     if report.filesystems.is_empty() {
         output.push_str(&format!(
-            "No filesystems exceed the threshold ({:.1}%). Nothing to reclaim.\n",
-            report.threshold_pct
+            "All selected filesystems satisfy the free-space goal. Nothing to reclaim (threshold: {:.1}%).\n",
+            report.threshold_pct,
         ));
         return output;
     }
 
     output.push_str("Reclaim summary\n");
     output.push_str(&format!(
-        "  Filesystems: {} over threshold  Targets: {} total ({} skipped by tier policy)\n",
-        report.totals.filesystems_over_threshold,
-        report.totals.targets_total,
-        report.totals.skipped_targets
+        "  Filesystems: {} selected  Targets: {} total ({} skipped)\n",
+        report.totals.filesystems_total, report.totals.targets_total, report.totals.skipped_targets
     ));
     output.push_str(&format!(
-        "  Estimated reclaim: {}  Goal: {}  Remaining shortfall: {}\n\n",
+        "  Known estimated reclaim: {} (+{} unknown yields)  Additional space sought: {}\n  {}: {}\n\n",
         human_size(report.totals.total_estimated_freed_bytes),
+        report.totals.unknown_estimates,
         human_size(report.totals.total_target_free_bytes),
+        if report.apply && report.filesystems.iter().all(|fs| fs.final_available_bytes.is_some()) { "Measured remaining shortfall" } else if report.apply { "Unverified shortfall estimate" } else { "Shortfall after known estimates" },
         human_size(report.totals.total_goal_shortfall_bytes)
     ));
     if report.totals.skipped_estimated_freed_bytes > 0 {
@@ -758,17 +979,17 @@ pub fn format_report_human(report: &ReclaimReport) -> String {
         ));
         output.push_str(&format!("  Mounts: {}\n", fs.mounts.join(", ")));
         output.push_str(&format!(
-            "  Size: {}  Used: {}  Available: {}  Target: {}  Est. reclaim: {}\n",
+            "  Size: {}  Used: {}  Initial available: {}  Required available: {} ({} bytes)\n  Known estimated reclaim: {}\n",
             human_size(fs.total_bytes),
             human_size(fs.used_bytes),
             human_size(fs.available_bytes),
-            human_size(fs.target_free_bytes),
+            human_size(fs.required_available_bytes),
+            fs.required_available_bytes,
             human_size(fs.estimated_freed_bytes)
         ));
 
         if fs.targets.is_empty() {
-            output.push_str("  No filesystem-local targets found.\n\n");
-            continue;
+            output.push_str("  No configured filesystem-local targets found.\n");
         }
 
         output.push('\n');
@@ -781,18 +1002,27 @@ pub fn format_report_human(report: &ReclaimReport) -> String {
             output.push_str(&format_target_row(target));
         }
 
-        if let Some(actual) = fs.actual_freed_bytes {
-            let goal = if fs.goal_met.unwrap_or(false) {
-                "MET"
-            } else {
-                "NOT MET"
+        if report.apply {
+            let goal = match fs.goal_met {
+                Some(true) => "MET",
+                Some(false) => "NOT MET",
+                None => "UNVERIFIED",
             };
             output.push_str(&format!(
-                "\n  Result: {} freed (goal: {goal})\n",
-                human_size(actual)
+                "\n  Result: goal {goal}; adapter-reported yield: {}\n",
+                optional_size(fs.actual_freed_bytes)
             ));
+            if let Some(net) = fs.net_available_change_bytes {
+                output.push_str(&format!("  Net available-space change: {net:+} bytes\n"));
+            }
             if let Some(final_avail) = fs.final_available_bytes {
-                output.push_str(&format!("  Final available: {}\n", human_size(final_avail)));
+                output.push_str(&format!("  Final available: {} ({final_avail} bytes)\n  Remaining shortfall: {} ({} bytes)\n", human_size(final_avail), human_size(fs.required_available_bytes.saturating_sub(final_avail)), fs.required_available_bytes.saturating_sub(final_avail)));
+            }
+            if let Some(error) = &fs.measurement_error {
+                output.push_str(&format!("  Measurement failed: {error}\n"));
+            }
+            if fs.goal_met == Some(false) {
+                output.push_str("  Eligible actions exhausted or stopped at their configured budgets; see target notes.\n");
             }
         }
 
@@ -813,7 +1043,7 @@ pub fn format_report_human(report: &ReclaimReport) -> String {
     }
 
     if !report.health.is_empty() {
-        output.push_str("Remaining pressure\n");
+        output.push_str("Threshold health (separate from the requested free-space goal)\n");
         for h in &report.health {
             let mounts = h.mounts.join(", ");
             if h.below_threshold {
@@ -833,6 +1063,10 @@ pub fn format_report_human(report: &ReclaimReport) -> String {
             }
         }
         output.push('\n');
+    }
+
+    for error in &report.errors {
+        output.push_str(&format!("Reclaim error: {error}\n"));
     }
 
     output
@@ -863,11 +1097,15 @@ fn format_target_row(target: &ReclaimTarget) -> String {
         "  {:<36} {:<11} {:<12} {:<10} {:<18} {}\n",
         format!("{}/{}", target.framework, target.variant),
         target.tier,
-        human_size(target.estimated_freed_bytes),
+        optional_size(target.estimated_freed_bytes),
         target.status,
         truncate(&surfaces, 18),
         notes
     )
+}
+
+fn optional_size(bytes: Option<u64>) -> String {
+    bytes.map(human_size).unwrap_or_else(|| "unknown".into())
 }
 
 fn truncate(value: &str, max_chars: usize) -> String {
@@ -896,6 +1134,229 @@ mod tests {
     use super::*;
 
     #[test]
+    fn explicit_free_goal_selects_filesystem_below_default_threshold() {
+        let groups = filesystem_groups(&[mount("/nix", "test", 1000, 700)]);
+        let config = ReclaimConfig {
+            mount: Some("/nix".into()),
+            min_free_bytes: Some(400),
+            ..Default::default()
+        };
+        assert_eq!(selected_filesystem_keys(&config, &groups).unwrap().len(), 1);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn undiscovered_requested_filesystem_cannot_be_a_successful_empty_plan() {
+        let config = ReclaimConfig {
+            mount: Some("/nix".into()),
+            min_free_bytes: Some(u64::MAX),
+            ..Default::default()
+        };
+        assert!(selected_filesystem_keys(&config, &[]).is_err());
+    }
+
+    #[test]
+    fn btrfs_subvolumes_share_one_reclaim_goal() {
+        let mut root = mount("/", "test", 1000, 900);
+        root.fsroot = Some("/@root".into());
+        let mut nix = root.clone();
+        nix.mount_point = "/nix".into();
+        nix.fsroot = Some("/@nix".into());
+        assert_eq!(filesystem_groups(&[root, nix]).len(), 1);
+    }
+
+    fn execution_fixture(required: u64, initial: u64) -> (ReclaimConfig, ReclaimReport) {
+        let config = ReclaimConfig {
+            apply: true,
+            min_free_bytes: Some(required),
+            ..Default::default()
+        };
+        let groups = filesystem_groups(&[mount(
+            "/nix",
+            "test",
+            required * 10,
+            required * 10 - initial,
+        )]);
+        let mut report = empty_report(&config);
+        report
+            .filesystems
+            .push(filesystem_report(&groups[0], &config));
+        (config, report)
+    }
+
+    #[test]
+    fn stops_after_goal_and_keeps_unknown_yield_distinct_from_zero() {
+        let (config, mut report) = execution_fixture(150, 40);
+        report.filesystems[0].targets = vec![
+            sample_target("first", "clean", "/nix"),
+            sample_target("second", "clean", "/nix"),
+        ];
+        report.filesystems[0].targets[0].estimated_freed_bytes = None;
+        let available = std::cell::Cell::new(40);
+        let mut actions = 0;
+        execute_with(
+            &mut report,
+            &config,
+            |_| {
+                Ok(mount::FilesystemStats {
+                    total_bytes: 1500,
+                    used_bytes: 1500 - available.get(),
+                    available_bytes: available.get(),
+                })
+            },
+            |target, _| {
+                actions += 1;
+                available.set(160);
+                target.status = "completed";
+                target.actual_freed_bytes = None;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(actions, 1);
+        assert_eq!(report.filesystems[0].targets[1].status, "skipped");
+        assert_eq!(report.filesystems[0].net_available_change_bytes, Some(120));
+        assert_eq!(report.totals.total_actual_freed_bytes, None);
+        assert_eq!(report.totals.total_goal_shortfall_bytes, 0);
+        assert!(ensure_success(&report).is_ok());
+        let human = format_report_human(&report);
+        assert!(human.contains("goal MET; adapter-reported yield: unknown"));
+        assert!(human.contains("160 bytes"));
+    }
+
+    #[test]
+    fn exact_100_gib_goal_is_unmet_even_when_display_rounds_to_100() {
+        let required = 100 << 30;
+        let initial = required - (100 << 20);
+        let (config, mut report) = execution_fixture(required, initial);
+        execute_with(
+            &mut report,
+            &config,
+            |_| {
+                Ok(mount::FilesystemStats {
+                    total_bytes: required * 10,
+                    used_bytes: required * 10 - initial,
+                    available_bytes: initial,
+                })
+            },
+            |_, _| panic!("no configured cleanup action"),
+        )
+        .unwrap();
+        assert!(ensure_success(&report).is_err());
+        assert_eq!(report.filesystems[0].goal_met, Some(false));
+        assert_eq!(report.totals.total_goal_shortfall_bytes, 100 << 20);
+        let human = format_report_human(&report);
+        assert!(human.contains("goal NOT MET"));
+        assert!(human.contains("104857600 bytes"));
+        assert!(human.contains("No configured filesystem-local targets"));
+    }
+
+    #[test]
+    fn failed_action_still_fails_when_other_writers_reach_goal() {
+        let (config, mut report) = execution_fixture(150, 40);
+        report.filesystems[0]
+            .targets
+            .push(sample_target("first", "clean", "/nix"));
+        let available = std::cell::Cell::new(40);
+        execute_with(
+            &mut report,
+            &config,
+            |_| {
+                Ok(mount::FilesystemStats {
+                    total_bytes: 1500,
+                    used_bytes: 1500 - available.get(),
+                    available_bytes: available.get(),
+                })
+            },
+            |_, _| {
+                available.set(150);
+                anyhow::bail!("sudo: a password is required")
+            },
+        )
+        .unwrap();
+        assert_eq!(report.filesystems[0].goal_met, Some(true));
+        assert!(ensure_success(&report).is_err());
+        assert!(
+            report.filesystems[0].targets[0]
+                .notes
+                .contains("password is required")
+        );
+    }
+
+    #[test]
+    fn measurement_failure_skips_cleanup_and_keeps_result_unverified() {
+        let (config, mut report) = execution_fixture(150, 40);
+        report.filesystems[0]
+            .targets
+            .push(sample_target("first", "clean", "/nix"));
+        execute_with(
+            &mut report,
+            &config,
+            |_| anyhow::bail!("statvfs unavailable"),
+            |_, _| panic!("cleanup requires a verified goal"),
+        )
+        .unwrap();
+        assert_eq!(report.filesystems[0].goal_met, None);
+        assert_eq!(report.filesystems[0].targets[0].status, "skipped");
+        assert!(ensure_success(&report).is_err());
+        assert!(format_report_human(&report).contains("UNVERIFIED"));
+    }
+
+    #[test]
+    fn execution_baseline_and_already_met_goal_prevent_unnecessary_cleanup() {
+        let (config, mut report) = execution_fixture(150, 40);
+        report.filesystems[0]
+            .targets
+            .push(sample_target("first", "clean", "/nix"));
+        execute_with(
+            &mut report,
+            &config,
+            |_| {
+                Ok(mount::FilesystemStats {
+                    total_bytes: 1500,
+                    used_bytes: 1300,
+                    available_bytes: 200,
+                })
+            },
+            |_, _| panic!("goal met before execution"),
+        )
+        .unwrap();
+        assert_eq!(report.filesystems[0].available_bytes, 200);
+        assert_eq!(report.filesystems[0].net_available_change_bytes, Some(0));
+        assert!(ensure_success(&report).is_ok());
+    }
+
+    #[test]
+    fn signed_net_change_is_preserved_when_concurrent_writes_exceed_cleanup() {
+        let (config, mut report) = execution_fixture(150, 40);
+        report.filesystems[0]
+            .targets
+            .push(sample_target("first", "clean", "/nix"));
+        let available = std::cell::Cell::new(40);
+        execute_with(
+            &mut report,
+            &config,
+            |_| {
+                Ok(mount::FilesystemStats {
+                    total_bytes: 1500,
+                    used_bytes: 1500 - available.get(),
+                    available_bytes: available.get(),
+                })
+            },
+            |target, _| {
+                available.set(30);
+                target.status = "completed";
+                target.actual_freed_bytes = Some(100);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(report.totals.total_actual_freed_bytes, Some(100));
+        assert_eq!(report.totals.net_available_change_bytes, Some(-10));
+        assert!(ensure_success(&report).is_err());
+    }
+
+    #[test]
     fn configured_reclaim_preserves_pins_and_never_executes_reports() {
         let dir = tempfile::tempdir().unwrap();
         let models = dir.path().join("models");
@@ -921,16 +1382,24 @@ mod tests {
         let gated = inspect_targets(&config, &groups).unwrap();
         assert_eq!(gated.len(), 2);
         assert_eq!(gated[0].target.status, "skipped");
-        assert_eq!(gated[0].target.estimated_freed_bytes, 6);
-        assert_eq!(gated[1].target.estimated_freed_bytes, 0);
+        assert_eq!(gated[0].target.estimated_freed_bytes, Some(6));
+        assert_eq!(gated[1].target.estimated_freed_bytes, Some(0));
         config.force = true;
         let mut targets = inspect_targets(&config, &groups).unwrap();
         assert_eq!(targets[1].target.status, "skipped");
         // Even a mistakenly pending report remains non-executable with force.
         targets[1].target.status = "pending";
-        assert_eq!(execute_target(&mut targets[1].target, &config).unwrap(), 0);
+        let runtime = Runtime::new(&config.limits);
+        let context = ActionContext {
+            mount: None,
+            required_available_bytes: None,
+            limits: &config.limits,
+            runtime: &runtime,
+        };
+        execute_target(&mut targets[1].target, &config, &context).unwrap();
         assert_eq!(targets[1].target.status, "skipped");
-        assert_eq!(execute_target(&mut targets[0].target, &config).unwrap(), 6);
+        execute_target(&mut targets[0].target, &config, &context).unwrap();
+        assert_eq!(targets[0].target.actual_freed_bytes, Some(6));
         assert!(models.join("pinned.gguf").exists());
         assert!(!models.join("unused.gguf").exists());
         std::fs::write(&policy, r#"{"targets": []}"#).unwrap();
@@ -987,11 +1456,12 @@ mod tests {
             scope: TargetScope::SingleSurface,
             paths: vec![format!("{surface}/cache")],
             surfaces: vec![surface.to_string()],
-            estimated_freed_bytes: 1024,
+            estimated_freed_bytes: Some(1024),
             actual_freed_bytes: None,
             status: "pending",
             skip_reason: None,
             notes: "test target".to_string(),
+            command_log: String::new(),
         }
     }
 
@@ -1040,7 +1510,7 @@ mod tests {
     #[test]
     fn human_format_lists_aliases_once_and_keeps_unassigned_separate() {
         let report = ReclaimReport {
-            schema_version: 2,
+            schema_version: 3,
             threshold_pct: 85.0,
             apply: false,
             force: false,
@@ -1054,6 +1524,8 @@ mod tests {
                 total_target_free_bytes: 0,
                 total_goal_shortfall_bytes: 0,
                 total_actual_freed_bytes: None,
+                unknown_estimates: 0,
+                net_available_change_bytes: None,
             },
             filesystems: vec![ReclaimFilesystem {
                 device: "/dev/nvme0n1p2".to_string(),
@@ -1071,10 +1543,13 @@ mod tests {
                 available_bytes: 10,
                 usage_pct: 90.0,
                 target_free_bytes: 0,
+                required_available_bytes: 10,
                 estimated_freed_bytes: 1024,
                 actual_freed_bytes: None,
                 final_available_bytes: None,
                 goal_met: None,
+                net_available_change_bytes: None,
+                measurement_error: None,
                 targets: vec![sample_target("user-cache", "purge-go-build", "/home")],
             }],
             unassigned_targets: vec![ReclaimTarget {
@@ -1085,13 +1560,15 @@ mod tests {
                 scope: TargetScope::Unassigned,
                 paths: vec!["systemctl --failed".to_string()],
                 surfaces: Vec::new(),
-                estimated_freed_bytes: 1024,
+                estimated_freed_bytes: Some(1024),
                 actual_freed_bytes: None,
                 status: "pending",
                 skip_reason: None,
                 notes: "system action".to_string(),
+                command_log: String::new(),
             }],
             health: Vec::new(),
+            errors: Vec::new(),
         };
 
         let formatted = format_report_human(&report);
@@ -1103,11 +1580,11 @@ mod tests {
     }
 
     #[test]
-    fn report_serializes_schema_version_two() {
+    fn report_serializes_schema_version_three() {
         let report = empty_report(&ReclaimConfig::default());
         let json = serde_json::to_value(report).unwrap();
 
-        assert_eq!(json["schema_version"], 2);
+        assert_eq!(json["schema_version"], 3);
         assert!(json.get("filesystems").is_some());
         assert!(json.get("unassigned_targets").is_some());
         assert!(json.get("totals").is_some());

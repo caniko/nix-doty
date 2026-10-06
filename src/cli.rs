@@ -136,7 +136,7 @@ pub enum Command {
         #[arg(long, default_value = "85.0")]
         threshold: f64,
         /// Minimum free space target in bytes (e.g. "1073741824" for 1 GiB)
-        #[arg(long, value_name = "BYTES")]
+        #[arg(long, value_name = "BYTES", conflicts_with = "min_free_pct")]
         min_free_bytes: Option<u64>,
         /// Minimum free space target as percentage
         #[arg(long, value_name = "PCT")]
@@ -150,6 +150,8 @@ pub enum Command {
         /// Include all mounts, not just those above threshold
         #[arg(long)]
         all: bool,
+        #[command(flatten)]
+        limits: crate::reclaim::runtime::Limits,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -212,18 +214,20 @@ impl Cli {
                 apply,
                 force,
                 all,
+                limits,
                 json,
-            } => crate::commands::reclaim(
-                config,
+            } => crate::commands::reclaim(crate::reclaim::ReclaimConfig {
+                config_path: config,
                 mount,
-                threshold,
+                threshold_pct: threshold,
                 min_free_bytes,
                 min_free_pct,
                 apply,
                 force,
                 all,
+                limits,
                 json,
-            ),
+            }),
         }
     }
 }

@@ -569,51 +569,22 @@ fn configured_to_variants(configured: Vec<ConfiguredTarget>) -> Result<Vec<Selec
         .collect()
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn reclaim(
-    config_path: String,
-    mount: Option<String>,
-    threshold: f64,
-    min_free_bytes: Option<u64>,
-    min_free_pct: Option<f64>,
-    apply: bool,
-    force: bool,
-    all: bool,
-    json: bool,
-) -> Result<()> {
-    let config = crate::reclaim::ReclaimConfig {
-        config_path,
-        mount,
-        threshold_pct: threshold,
-        min_free_bytes,
-        min_free_pct,
-        apply,
-        force,
-        json,
-        all,
-    };
-
+pub fn reclaim(config: crate::reclaim::ReclaimConfig) -> Result<()> {
     let mut report = crate::reclaim::plan(&config)?;
 
-    if report.filesystems.is_empty() {
-        println!(
-            "No filesystems exceed the threshold ({}%). Nothing to reclaim.",
-            threshold
-        );
-        return Ok(());
+    if config.apply && !report.filesystems.is_empty() {
+        if let Err(error) = crate::reclaim::execute(&mut report, &config) {
+            report.errors.push(format!("{error:#}"));
+        }
     }
 
-    if apply {
-        crate::reclaim::execute(&mut report, &config)?;
-    }
-
-    if json {
+    if config.json {
         println!("{}", serde_json::to_string_pretty(&report)?);
     } else {
         print!("{}", crate::reclaim::format_report_human(&report));
     }
 
-    Ok(())
+    crate::reclaim::ensure_success(&report)
 }
 
 fn human_size(bytes: u64) -> String {
