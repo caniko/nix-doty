@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- Reclaim checks the exact requested available-byte goal independently of the
+  usage threshold, stops completed plans early, and exits unsuccessfully for
+  failed actions or unmet/unverified goals. Btrfs subvolumes share one goal.
+- Unknown yields are notices, not cleanup errors. Live filesystem measurements
+  report signed net availability change separately from adapter-reported bytes.
+
 - Model discovery continues past blocked siblings and missing roots; active
   descendant consumers protect entire snapshots. Failed inspections remain
   visible, and incomplete storage measurements carry unknown totals.
@@ -12,6 +18,13 @@
   pin these tools in the installed runtime wrapper.
 
 ### Added
+
+- Goal-driven Nix reclaim: retention is applied once (three generations and
+  14 days by default), preserving gcroots and direnv roots, followed by bounded
+  GC passes. Runtime and logical-byte budgets, streamed progress, bounded log
+  tails, and interrupt receipts are documented in `docs/reclaim.md`.
+- Reclaim JSON schema 3 represents unknown target estimates as `null`, exposes
+  absolute goals and net availability changes, and renders empty plans as JSON.
 
 - Required inspection coverage and `doctor --expected-config` activation-drift
   diagnostics; read-only Nix-build and application-owned service-storage reports.
