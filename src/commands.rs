@@ -236,6 +236,7 @@ pub fn run(
         let settings = ledger_settings(selected, ledger)?;
         match v.apply_with_settings(apply, force, &settings) {
             Ok(r) => {
+                command_failed |= apply && !r.errors.is_empty();
                 if !json {
                     let prefix = if apply { "APPLIED" } else { "DRY-RUN" };
                     let status = apply_status(&r, apply);
@@ -315,14 +316,14 @@ fn apply_status(report: &ApplyReport, apply: bool) -> &'static str {
     if !apply {
         return "dry-run";
     }
+    if !report.errors.is_empty() {
+        return "failed";
+    }
     if report.skipped > 0 {
         return "skipped";
     }
     if report.removed > 0 {
         return "applied";
-    }
-    if !report.errors.is_empty() {
-        return "failed";
     }
     "no-op"
 }
@@ -492,21 +493,16 @@ fn coverage_gaps(
             !targets.iter().any(|target| {
                 target.name == required.name
                     && target.variant == required.variant
-                    && registry::find_variant(&target.name, &target.variant).is_some()
                     // Roots are the actual scan surfaces for these providers.
                     // Retention roots alone only constrain deletion containment.
-                    && (match target.name.as_str() {
-                        "managed-models" | "nix-builds" => &["roots"][..],
-                        "llama-models" => &["modelsDir"][..],
-                        _ => &["paths", "path"][..],
-                    }).iter().any(|key| {
-                        let value = &target.settings[*key];
-                        value.as_str().is_some_and(|path| path == required.path)
-                            || value.as_array().is_some_and(|paths| {
-                                paths
-                                    .iter()
-                                    .any(|path| path.as_str() == Some(&required.path))
+                    && registry::find_variant(&target.name, &target.variant).is_some_and(|variant| {
+                        if matches!(target.name.as_str(), "managed-models" | "nix-builds") {
+                            target.settings["roots"].as_array().is_some_and(|paths| {
+                                paths.iter().any(|path| path.as_str() == Some(&required.path))
                             })
+                        } else {
+                            variant.scan_paths(&target.settings).contains(&required.path)
+                        }
                     })
             })
         })
@@ -759,5 +755,37 @@ mod coverage_tests {
         );
         target.settings = serde_json::json!({"paths": ["/store"]});
         assert!(coverage_gaps(&[target], &[required]).is_empty());
+    }
+
+    #[test]
+    fn provider_defaults_count_until_the_scan_path_is_overridden() {
+        for (name, variant, path, override_settings) in [
+            (
+                "llama-models",
+                "disk-report",
+                "/data/scratch/models/gguf",
+                serde_json::json!({"modelsDir":"/elsewhere"}),
+            ),
+            (
+                "pg-backup-state",
+                "backup-report",
+                "/var/lib/postgresql",
+                serde_json::json!({"paths":["/elsewhere"]}),
+            ),
+        ] {
+            let required = config::Requirement {
+                name: name.into(),
+                variant: variant.into(),
+                path: path.into(),
+            };
+            let mut target = ConfiguredTarget {
+                name: name.into(),
+                variant: variant.into(),
+                settings: serde_json::json!({}),
+            };
+            assert!(coverage_gaps(&[target.clone()], std::slice::from_ref(&required)).is_empty());
+            target.settings = override_settings;
+            assert_eq!(coverage_gaps(&[target], &[required]).len(), 1);
+        }
     }
 }

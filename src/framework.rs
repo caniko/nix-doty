@@ -63,6 +63,20 @@ pub trait Variant: Sync {
     fn tier(&self) -> Tier;
     fn inspect(&self) -> Result<Inspection>;
     fn apply(&self, apply: bool, force: bool) -> Result<ApplyReport>;
+    /// Pure scan-surface discovery for doctor, including provider-owned defaults.
+    fn scan_paths(&self, settings: &Value) -> Vec<String> {
+        let mut paths: Vec<String> = settings["paths"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_owned)
+            .collect();
+        if let Some(path) = settings["path"].as_str() {
+            paths.push(path.to_owned());
+        }
+        paths
+    }
     fn inspect_with_settings(&self, _settings: &Value) -> Result<Inspection> {
         self.inspect()
     }

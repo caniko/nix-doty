@@ -106,6 +106,14 @@ impl Variant for StorageReport {
                         let Some(pid) = build_pid(&path) else {
                             continue;
                         };
+                        match fs::symlink_metadata(&path) {
+                            Ok(metadata) if metadata.is_dir() => (),
+                            Ok(_) => continue,
+                            Err(error) => {
+                                issues.push(format!("{}: {error}", path.display()));
+                                continue;
+                            }
+                        }
                         let usage = crate::targets::report::path_usage(&path, 100_000);
                         let owner = fs::symlink_metadata(&path).map(|m| m.uid());
                         let process_use = owner.map_err(|error| error.to_string()).map(|uid| {
@@ -162,10 +170,16 @@ mod tests {
         }
         let root = tempfile::tempdir().unwrap();
         fs::create_dir(root.path().join("nix-4294967295-abcd")).unwrap();
+        fs::write(
+            root.path().join("nix-4294967295-file"),
+            b"not a build directory",
+        )
+        .unwrap();
         let report = BUILD_REPORT
             .inspect_with_settings(&serde_json::json!({"roots": [root.path()]}))
             .unwrap();
         let notes: Value = serde_json::from_str(&report.notes).unwrap();
+        assert_eq!(notes["entries"].as_array().unwrap().len(), 1);
         assert_eq!(notes["entries"][0]["pidAbsent"], true);
         assert_eq!(notes["entries"][0]["eligible"], false);
         assert_eq!(BUILD_REPORT.apply(true, true).unwrap().removed, 0);

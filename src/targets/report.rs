@@ -114,6 +114,12 @@ pub(crate) fn path_usage(path: &Path, max_entries: u64) -> PathUsage {
                         .iter()
                         .any(|n| entry.file_name() == *n)
                     {
+                        result.complete = false;
+                        if result.issues.len() < 32 {
+                            result
+                                .issues
+                                .push(format!("excluded subtree: {}", entry.path().display()));
+                        }
                         continue;
                     }
                     anyhow::ensure!(pending.len() < remaining as usize, "scan budget exhausted");
@@ -164,5 +170,26 @@ mod tests {
         assert!(!usage.complete);
         assert_eq!(usage.logical_bytes_lower_bound, 0);
         assert!(usage.issues[0].contains("symlink"));
+    }
+
+    #[test]
+    fn excluded_temporary_storage_is_an_explicit_incomplete_lower_bound() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("known"), b"known").unwrap();
+        for directory in ["tmp", ".tmp", ".doty-quarantine"] {
+            let path = root.path().join(directory);
+            std::fs::create_dir(&path).unwrap();
+            std::fs::write(path.join("omitted"), b"omitted bytes").unwrap();
+        }
+        let usage = path_usage(root.path(), 20);
+        assert!(!usage.complete);
+        assert_eq!(usage.logical_bytes_lower_bound, 5);
+        assert_eq!(usage.issues.len(), 3);
+        assert!(
+            usage
+                .issues
+                .iter()
+                .all(|issue| issue.contains("excluded subtree"))
+        );
     }
 }
