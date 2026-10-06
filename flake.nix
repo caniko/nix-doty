@@ -98,6 +98,7 @@
         lib.inspectionCoverage = true;
         lib.scratchAssessmentVersion = 1;
         lib.nixOperationVersion = 1;
+        lib.goalDrivenReclaimVersion = 1;
         crossPackages."x86_64-linux"."aarch64-linux".doty = self.packages."x86_64-linux"."doty-aarch64-linux";
         nixosModules.default = {pkgs, ...}: {
           imports = [./module/default.nix];
