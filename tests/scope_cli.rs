@@ -24,7 +24,14 @@ impl Fixture {
         .unwrap();
     }
     fn run(&self, args: &[&str]) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_doty"))
+        self.command(env!("CARGO_BIN_EXE_doty"))
+            .args(args)
+            .output()
+            .unwrap()
+    }
+    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut command = Command::new(program);
+        command
             .env("HOME", self.home.path())
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("XDG_CACHE_HOME")
@@ -34,10 +41,8 @@ impl Fixture {
             .env_remove("CHAOSBOX_SCRATCH_WORK")
             .env_remove("CHAOSBOX_SCRATCH_BIN")
             .env("PATH", self.home.path().join("bin"))
-            .env_remove("DOTY_STATE_DIR")
-            .args(args)
-            .output()
-            .unwrap()
+            .env_remove("DOTY_STATE_DIR");
+        command
     }
 }
 fn success(output: Output) -> Value {
@@ -456,4 +461,75 @@ fn user_removal_restore_and_purge_round_trip_stays_in_owned_scratch() {
     ]));
     success(f.run(&["purge", output["id"].as_str().unwrap(), "--apply", "--json"]));
     assert!(!root.join("discard").exists());
+}
+
+#[test]
+fn printed_removal_followups_preserve_mode_and_quoted_external_roots() {
+    let shell = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("sh"))
+        .find(|path| path.is_file())
+        .unwrap();
+    for mode in ["user", "system"] {
+        let f = Fixture::new();
+        let external = tempfile::tempdir().unwrap();
+        let root = external.path().join("external root's");
+        fs::create_dir(&root).unwrap();
+        let file = root.join("discard");
+        fs::write(&file, "data").unwrap();
+        let mut scope = vec!["--mode", mode];
+        if mode == "user" {
+            scope.extend(["--user-root", root.to_str().unwrap()]);
+        }
+        let mut invocation = scope.clone();
+        invocation.extend([
+            "rm",
+            "--root",
+            root.to_str().unwrap(),
+            "--",
+            file.to_str().unwrap(),
+        ]);
+        let output = f.run(&invocation);
+        assert!(output.status.success());
+        let text = String::from_utf8(output.stdout).unwrap();
+        let id = text.split_whitespace().nth(2).unwrap();
+        let followup = |text: &str| {
+            let command = text
+                .lines()
+                .find_map(|line| line.strip_prefix("Review, then run: "))
+                .unwrap();
+            assert!(
+                command.starts_with(&format!("doty --mode {mode} ")),
+                "{command}"
+            );
+            let output = f
+                .command(&shell)
+                .env("DOTY_FIXTURE_BINARY", env!("CARGO_BIN_EXE_doty"))
+                .args([
+                    "-c",
+                    &format!(
+                        "exec \"$DOTY_FIXTURE_BINARY\" {}",
+                        command.strip_prefix("doty ").unwrap()
+                    ),
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        followup(&text);
+        assert!(!file.exists());
+        // Recorded-plan JSON previews must remain parseable as one JSON document.
+        let mut review = scope.clone();
+        review.extend(["rm", "--plan", id, "--json"]);
+        success(f.run(&review));
+        let mut purge = scope;
+        purge.extend(["purge", id]);
+        let output = f.run(&purge);
+        assert!(output.status.success());
+        followup(&String::from_utf8(output.stdout).unwrap());
+        assert!(!file.exists());
+    }
 }

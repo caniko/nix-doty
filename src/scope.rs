@@ -44,6 +44,7 @@ pub struct ExecutionContext {
     pub data_home: PathBuf,
     pub state_home: PathBuf,
     roots: Vec<PathBuf>,
+    extra_roots: Vec<PathBuf>,
 }
 
 impl ExecutionContext {
@@ -57,6 +58,7 @@ impl ExecutionContext {
             data_home: PathBuf::new(),
             state_home: PathBuf::new(),
             roots: Vec::new(),
+            extra_roots: Vec::new(),
         }
     }
 
@@ -89,6 +91,7 @@ impl ExecutionContext {
             state_home: xdg("XDG_STATE_HOME", ".local/state"),
             home: home.clone(),
             roots: vec![home],
+            extra_roots: extra_roots.to_vec(),
         };
         context.check_ancestry(&context.home, true)?;
         ensure!(
@@ -110,6 +113,15 @@ impl ExecutionContext {
             context.roots.push(root.clone());
         }
         Ok(context)
+    }
+
+    pub(crate) fn followup_args(&self) -> Result<Vec<String>> {
+        let mut args = vec!["--mode".to_owned(), self.mode.as_str().to_owned()];
+        for root in &self.extra_roots {
+            args.push("--user-root".to_owned());
+            args.push(root.to_str().context("non-UTF8 user root")?.to_owned());
+        }
+        Ok(args)
     }
 
     pub fn config_path(&self, explicit: Option<String>) -> Result<String> {

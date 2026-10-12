@@ -677,7 +677,9 @@ pub fn rm(
         if !apply {
             let recorded = crate::rm::describe_plan(id)?;
             print_rm_plan(&recorded, false, json)?;
-            println!("Review, then run: doty rm --apply --plan {id}");
+            if !json {
+                print_followup(context, &["rm", "--apply", "--plan", id])?;
+            }
             return Ok(());
         }
         let applied = crate::rm::apply_plan_scoped(id, context)?;
@@ -694,7 +696,7 @@ pub fn rm(
     }
     let preview = crate::rm::plan_removal_with_ledger(Path::new(root), &paths, ledger)?;
     if !apply {
-        print_rm_plan_preview(&preview, json)?;
+        print_rm_plan_preview(&preview, json, context)?;
         return Ok(());
     }
     let applied = crate::rm::apply_plan_scoped(&preview.id, context)?;
@@ -702,7 +704,11 @@ pub fn rm(
     Ok(())
 }
 
-fn print_rm_plan_preview(preview: &crate::rm::RmPreview, json: bool) -> Result<()> {
+fn print_rm_plan_preview(
+    preview: &crate::rm::RmPreview,
+    json: bool,
+    context: &crate::scope::ExecutionContext,
+) -> Result<()> {
     if json {
         println!(
             "{}",
@@ -724,7 +730,26 @@ fn print_rm_plan_preview(preview: &crate::rm::RmPreview, json: bool) -> Result<(
     if let Some(packet) = &preview.scratch_intelligence {
         crate::scratch_ledger::print_report(packet);
     }
-    println!("Review, then run: doty rm --apply --plan {}", preview.id);
+    print_followup(context, &["rm", "--apply", "--plan", &preview.id])
+}
+
+fn print_followup(context: &crate::scope::ExecutionContext, command: &[&str]) -> Result<()> {
+    let args = std::iter::once("doty".to_owned())
+        .chain(context.followup_args()?)
+        .chain(command.iter().map(|arg| (*arg).to_owned()))
+        .map(|arg| {
+            if !arg.is_empty()
+                && arg
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b"_./-".contains(&b))
+            {
+                arg
+            } else {
+                format!("'{}'", arg.replace('\'', "'\\''"))
+            }
+        })
+        .collect::<Vec<_>>();
+    println!("Review, then run: {}", args.join(" "));
     Ok(())
 }
 
@@ -769,7 +794,9 @@ pub fn purge(
     if !apply {
         let preview = crate::rm::purge_preview(plan)?;
         print_rm_plan(&preview, false, json)?;
-        println!("Review, then run: doty purge --apply {plan}");
+        if !json {
+            print_followup(context, &["purge", "--apply", plan])?;
+        }
         return Ok(());
     }
     let purged = crate::rm::purge_apply_scoped(plan, context)?;
