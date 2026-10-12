@@ -246,6 +246,36 @@ fn user_trash_is_local_and_confirmed() {
 }
 
 #[test]
+fn user_trash_rejects_symlinked_structural_directories() {
+    for name in ["files", "info"] {
+        let f = Fixture::new();
+        let trash = f.home.path().join(".local/share/Trash");
+        fs::create_dir_all(&trash).unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let sentinel = outside.path().join("keep");
+        fs::write(&sentinel, "outside caller roots").unwrap();
+        std::os::unix::fs::symlink(outside.path(), trash.join(name)).unwrap();
+        f.config(
+            "user",
+            json!([{"name":"freedesktop-trash", "variant":"empty"}]),
+        );
+        for args in [
+            vec!["status", "--json"],
+            vec!["run", "--apply", "--force", "--json"],
+            vec!["reclaim", "--apply", "--force", "--json"],
+        ] {
+            let output = f.run(&args);
+            assert!(!output.status.success(), "{name}: {args:?}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("symlink"));
+            assert_eq!(
+                fs::read_to_string(&sentinel).unwrap(),
+                "outside caller roots"
+            );
+        }
+    }
+}
+
+#[test]
 fn foreign_and_shared_writable_roots_are_rejected() {
     let f = Fixture::new();
     let output = f.run(&["--user-root", "/etc", "list", "--json"]);

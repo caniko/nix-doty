@@ -355,9 +355,19 @@ impl ExecutionContext {
                     .as_array()
                     .context("trash paths must be an array")?;
                 for path in paths {
-                    self.admit_tree(Path::new(
-                        path.as_str().context("trash path must be a string")?,
-                    ))?;
+                    let path = Path::new(path.as_str().context("trash path must be a string")?);
+                    self.admit_tree(path)?;
+                    // Payload links can be unlinked, but the provider traverses
+                    // these structural directories rather than unlinking them.
+                    for name in ["files", "info"] {
+                        let directory = path.join(name);
+                        self.admit_path(&directory)?;
+                        match fs::symlink_metadata(&directory) {
+                            Ok(meta) => ensure!(meta.is_dir(), "trash {name} must be a directory"),
+                            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                            Err(e) => return Err(e.into()),
+                        }
+                    }
                 }
             }
             UserScope::UvCache => {
