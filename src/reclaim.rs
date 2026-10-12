@@ -164,7 +164,13 @@ pub fn plan(config: &ReclaimConfig) -> Result<ReclaimReport> {
         "reclaim budgets must be positive; timeout must be at most 86400 seconds"
     );
     // Admit the complete policy even when no filesystem currently needs cleanup.
-    crate::commands::select_variants(None, None, &config.config_path, &config.context)?;
+    for selected in
+        crate::commands::select_variants(None, None, &config.config_path, &config.context)?
+    {
+        config
+            .context
+            .settings(selected.variant.user_scope(), &selected.settings)?;
+    }
     let all_mounts = mount::read_mounts()?;
     let groups = filesystem_groups(&all_mounts);
     let selected_keys = selected_filesystem_keys(config, &groups)?;
@@ -602,10 +608,13 @@ fn inspect_targets(
 ) -> Result<Vec<ResolvedTarget>> {
     let mut targets = Vec::new();
 
-    for selected in
+    for mut selected in
         crate::commands::select_variants(None, None, &config.config_path, &config.context)?
     {
         let variant = selected.variant;
+        selected.settings = config
+            .context
+            .settings(variant.user_scope(), &selected.settings)?;
         let tier = variant.tier();
         let mut skip_reason = None;
         let mut status = "pending";

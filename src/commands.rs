@@ -134,7 +134,7 @@ pub fn status(
     let mut inspections = Vec::new();
     for selected in &frameworks {
         let v = selected.variant;
-        let settings = ledger_settings(selected, ledger)?;
+        let settings = context.settings(v.user_scope(), &ledger_settings(selected, ledger)?)?;
         match v.inspect_with_settings(&settings) {
             Ok(i) => inspections.push(i),
             Err(e) => {
@@ -567,19 +567,19 @@ pub(crate) fn select_variants(
             if configured.is_empty() {
                 anyhow::bail!("target {t} variant {v} is not configured in {config_path}");
             }
-            configured_to_variants(configured, context)
+            configured_to_variants(configured)
         }
         (Some(t), None) => {
             let configured = configured_for(Some(t), None, document.targets);
             if configured.is_empty() {
                 anyhow::bail!("target {t} is not configured in {config_path}");
             }
-            configured_to_variants(configured, context)
+            configured_to_variants(configured)
         }
         (None, Some(v)) => {
             anyhow::bail!("variant {v} requires --target so configured host policy is unambiguous")
         }
-        (None, None) => configured_to_variants(document.targets, context),
+        (None, None) => configured_to_variants(document.targets),
     }
 }
 
@@ -595,10 +595,7 @@ fn configured_for(
         .collect()
 }
 
-fn configured_to_variants(
-    configured: Vec<ConfiguredTarget>,
-    context: &crate::scope::ExecutionContext,
-) -> Result<Vec<SelectedVariant>> {
+fn configured_to_variants(configured: Vec<ConfiguredTarget>) -> Result<Vec<SelectedVariant>> {
     configured
         .into_iter()
         .map(|t| {
@@ -607,7 +604,9 @@ fn configured_to_variants(
             })?;
             Ok(SelectedVariant {
                 variant,
-                settings: context.settings(variant.user_scope(), &t.settings)?,
+                // Selection must not inspect paths belonging to apply-tier skips.
+                // Callers resolve and admit settings before inspection or execution.
+                settings: t.settings,
             })
         })
         .collect()

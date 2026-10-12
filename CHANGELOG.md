@@ -10,6 +10,10 @@
 
 ### Fixed
 
+- Safe cleanup continues when a skipped Confirm/Risky target has inadmissible
+  paths; inspected and executed targets still pass caller-scope admission.
+- Worktree removal rejects every preservation artifact inside the checkout,
+  including inventories rooted in an ancestor directory, and active Git bisects.
 - Reclaim preserves structured provider paths instead of splitting configurable
   pathnames on commas when assigning filesystem surfaces.
 - Worktree removal protects closed-descriptor memory mappings with newline and

@@ -219,6 +219,64 @@ fn dirty_or_stale_worktrees_are_rejected() {
 }
 
 #[test]
+fn ancestor_closeout_rejects_artifacts_inside_the_worktree() {
+    for internal_handoff in [false, true] {
+        let mut fixture = Fixture::new();
+        let evidence = fixture.closeout.parent().unwrap().to_owned();
+        let cache = fixture.worktree.join("cache");
+        fs::create_dir(&cache).unwrap();
+        let internal = cache.join("HANDOFF.evidence");
+        fs::write(&internal, "preserve this evidence\n").unwrap();
+        let parent = fixture._dir.path();
+        fs::copy(evidence.join("source.bundle"), parent.join("source.bundle")).unwrap();
+        fs::copy(evidence.join("HANDOFF.md"), parent.join("HANDOFF.md")).unwrap();
+        let mut doc: Value = serde_json::from_slice(&fs::read(&fixture.closeout).unwrap()).unwrap();
+        let name = internal.strip_prefix(parent).unwrap().to_str().unwrap();
+        doc["artifacts"][name] = artifact(&internal);
+        doc["handoff"] = json!(if internal_handoff {
+            internal.clone()
+        } else {
+            parent.join("HANDOFF.md")
+        });
+        fixture.closeout = parent.join("removal-readiness.json");
+        fs::write(&fixture.closeout, serde_json::to_vec(&doc).unwrap()).unwrap();
+        let before = fs::read(&fixture.closeout).unwrap();
+        for args in [vec![], vec!["--apply"]] {
+            let output = fixture.run(&args);
+            assert!(!output.status.success(), "{internal_handoff}: {args:?}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("artifact must be outside"));
+            assert!(fixture.worktree.exists());
+            assert_eq!(fs::read(&internal).unwrap(), b"preserve this evidence\n");
+            assert_eq!(fs::read(&fixture.closeout).unwrap(), before);
+            assert_eq!(
+                git(&fixture.repo, &["rev-parse", "finalized"]),
+                fixture.head
+            );
+        }
+    }
+}
+
+#[test]
+fn active_no_checkout_bisect_blocks_worktree_removal() {
+    let fixture = Fixture::new();
+    git(&fixture.worktree, &["bisect", "start", "--no-checkout"]);
+    let admin = PathBuf::from(git(&fixture.worktree, &["rev-parse", "--absolute-git-dir"]));
+    let log = fs::read(admin.join("BISECT_LOG")).unwrap();
+    assert!(admin.join("BISECT_START").exists());
+    for args in [vec![], vec!["--apply"]] {
+        let output = fixture.run(&args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("active Git operation: BISECT"));
+        assert!(fixture.worktree.exists());
+        assert_eq!(fs::read(admin.join("BISECT_LOG")).unwrap(), log);
+        assert_eq!(
+            git(&fixture.repo, &["rev-parse", "finalized"]),
+            fixture.head
+        );
+    }
+}
+
+#[test]
 fn changed_preservation_artifact_is_rejected() {
     let fixture = Fixture::new();
     fs::write(

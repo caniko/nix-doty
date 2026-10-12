@@ -251,6 +251,74 @@ fn user_trash_is_local_and_confirmed() {
 }
 
 #[test]
+fn skipped_confirm_target_does_not_block_safe_cleanup() {
+    let f = Fixture::new();
+    let cache = f.home.path().join(".cache/uv");
+    fs::create_dir_all(&cache).unwrap();
+    let trash = f.home.path().join(".local/share/Trash");
+    fs::create_dir_all(&trash).unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    let sentinel = outside.path().join("keep");
+    fs::write(&sentinel, "external evidence").unwrap();
+    std::os::unix::fs::symlink(outside.path(), trash.join("files")).unwrap();
+    let shell = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|p| p.join("sh"))
+        .find(|p| p.is_file())
+        .unwrap();
+    let tool = f.home.path().join("bin/uv");
+    fs::write(
+        &tool,
+        format!(
+            "#!{}\nprintf '%s\\n' \"$@\" > \"$HOME/uv-args\"\n",
+            shell.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    // Put the skipped target first to expose eager policy-wide admission.
+    f.config(
+        "user",
+        json!([
+            {"name":"freedesktop-trash", "variant":"empty"},
+            {"name":"uv-cache", "variant":"clean"}
+        ]),
+    );
+    let result = success(f.run(&["run", "--apply", "--json"]));
+    assert!(
+        result["reports"][0]["errors"][0]
+            .as_str()
+            .unwrap()
+            .contains("requires --force")
+    );
+    assert_eq!(
+        fs::read_to_string(f.home.path().join("uv-args")).unwrap(),
+        format!("cache\nclean\n--cache-dir\n{}\n", cache.display())
+    );
+    fs::remove_file(f.home.path().join("uv-args")).unwrap();
+    for args in [
+        vec!["status", "--json"],
+        vec!["run", "--json"],
+        vec!["run", "--apply", "--force", "--json"],
+        vec!["reclaim", "--json"],
+    ] {
+        let output = f.run(&args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("symlink"));
+        assert!(!f.home.path().join("uv-args").exists());
+    }
+    // A Safe target still has to pass admission before its executable runs.
+    f.config(
+        "user",
+        json!([
+            {"name":"uv-cache", "variant":"clean", "settings":{"cacheDir":outside.path()}}
+        ]),
+    );
+    assert!(!f.run(&["run", "--apply", "--json"]).status.success());
+    assert!(!f.home.path().join("uv-args").exists());
+    assert_eq!(fs::read_to_string(sentinel).unwrap(), "external evidence");
+}
+
+#[test]
 fn user_trash_rejects_symlinked_structural_directories() {
     for name in ["files", "info"] {
         let f = Fixture::new();

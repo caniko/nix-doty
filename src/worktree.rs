@@ -478,7 +478,9 @@ fn validate_checkout(
         "rebase-apply",
         "rebase-merge",
         "sequencer",
-        "bisect_log",
+        "BISECT_LOG",
+        "BISECT_HEAD",
+        "BISECT_START",
     ] {
         ensure!(
             !admin.join(name).try_exists()?,
@@ -500,6 +502,11 @@ fn validate_checkout(
 
 fn verify_artifacts(doc: &Closeout, closeout: &Path) -> Result<()> {
     ensure!(
+        !doc.handoff.starts_with(&doc.worktree),
+        "artifact must be outside the worktree: {}",
+        doc.handoff.display()
+    );
+    ensure!(
         !closeout.starts_with(&doc.worktree),
         "closeout must be outside the worktree"
     );
@@ -519,6 +526,11 @@ fn verify_artifacts(doc: &Closeout, closeout: &Path) -> Result<()> {
             "artifact names must be relative paths without .."
         );
         let path = parent.join(relative);
+        ensure!(
+            !path.starts_with(&doc.worktree),
+            "artifact must be outside the worktree: {}",
+            path.display()
+        );
         let file = regular(&path).with_context(|| format!("artifact {}", path.display()))?;
         ensure!(
             file.metadata()?.len() == artifact.bytes && digest_file(&path)? == artifact.sha256,
