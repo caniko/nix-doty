@@ -32,7 +32,11 @@ pub enum Command {
 }
 
 impl Command {
-    pub fn run(self, ledger: Option<&crate::scratch_ledger::Config>) -> Result<()> {
+    pub fn run(
+        self,
+        ledger: Option<&crate::scratch_ledger::Config>,
+        context: &crate::scope::ExecutionContext,
+    ) -> Result<()> {
         let Self::Remove {
             closeout,
             apply,
@@ -44,8 +48,11 @@ impl Command {
             "worktree removal requires Linux process and mount inspection"
         );
         let (document, bytes, closeout) = load(&closeout)?;
+        context.admit_tree(&document.worktree)?;
+        context.admit_tree(&document.owning_repository)?;
+        context.admit_path(&closeout)?;
         let digest = digest_bytes(&bytes)?;
-        let (owner, mut limited_process_inspection) = validate_checkout(&document)?;
+        let (owner, mut limited_process_inspection) = validate_checkout(&document, context)?;
         verify_artifacts(&document, &closeout)?;
         let mut chaosbox_link = if let Some(allocation) = chaosbox_allocation {
             let ledger =
@@ -67,6 +74,8 @@ impl Command {
             None
         };
         if apply {
+            context.admit_tree(&document.worktree)?;
+            context.admit_tree(&document.owning_repository)?;
             if let Some(link) = &mut chaosbox_link {
                 ledger
                     .context("Chaosbox configuration missing")?
@@ -83,12 +92,13 @@ impl Command {
                 load(&closeout)?.1 == bytes,
                 "closeout changed during verification"
             );
-            let (current_owner, omissions) = validate_checkout(&document)?;
+            let (current_owner, omissions) = validate_checkout(&document, context)?;
             ensure!(current_owner == owner, "owning repository changed");
             limited_process_inspection.extend(omissions);
             limited_process_inspection.sort_unstable();
             limited_process_inspection.dedup();
             verify_artifacts(&document, &closeout)?;
+            context.admit_tree(&document.worktree)?;
             git(
                 &owner,
                 &["worktree", "remove", "--", text(&document.worktree)?],
@@ -393,7 +403,10 @@ fn branch_head(repo: &Path, branch: &str) -> Result<String> {
     git_text(repo, &["rev-parse", "--verify", &reference])
 }
 
-fn validate_checkout(doc: &Closeout) -> Result<(PathBuf, Vec<u32>)> {
+fn validate_checkout(
+    doc: &Closeout,
+    context: &crate::scope::ExecutionContext,
+) -> Result<(PathBuf, Vec<u32>)> {
     let worktree = exact_path(&doc.worktree)?;
     ensure!(
         fs::symlink_metadata(worktree.join(".git"))?.is_file(),
@@ -403,6 +416,7 @@ fn validate_checkout(doc: &Closeout) -> Result<(PathBuf, Vec<u32>)> {
         &worktree,
         &["rev-parse", "--path-format=absolute", "--git-common-dir"],
     )?;
+    context.admit_tree(Path::new(&common))?;
     let entries = registrations(&worktree)?;
     let owner = entries
         .first()

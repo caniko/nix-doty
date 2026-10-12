@@ -769,6 +769,13 @@ fn recheck(candidate: &Candidate, settings: &Settings) -> Result<()> {
 }
 
 impl Variant for RetentionVariant {
+    fn user_scope(&self) -> crate::scope::UserScope {
+        if self.framework.name == "package-caches" {
+            crate::scope::UserScope::Paths
+        } else {
+            crate::scope::UserScope::SystemOnly
+        }
+    }
     fn name(&self) -> &'static str {
         self.name
     }
@@ -843,10 +850,35 @@ impl Variant for RetentionVariant {
     fn apply_with_settings(&self, apply: bool, force: bool, value: &Value) -> Result<ApplyReport> {
         self.apply_settings(apply, force, &Settings::parse(value)?)
     }
+    fn apply_scoped(
+        &self,
+        apply: bool,
+        force: bool,
+        value: &Value,
+        context: &crate::scope::ExecutionContext,
+    ) -> Result<ApplyReport> {
+        let value = context.settings(self.user_scope(), value)?;
+        crate::rm::admit_state(context)?;
+        self.apply_settings_scoped(apply, force, &Settings::parse(&value)?, context)
+    }
 }
 
 impl RetentionVariant {
     fn apply_settings(&self, apply: bool, force: bool, settings: &Settings) -> Result<ApplyReport> {
+        self.apply_settings_scoped(
+            apply,
+            force,
+            settings,
+            &crate::scope::ExecutionContext::system(),
+        )
+    }
+    fn apply_settings_scoped(
+        &self,
+        apply: bool,
+        force: bool,
+        settings: &Settings,
+        context: &crate::scope::ExecutionContext,
+    ) -> Result<ApplyReport> {
         let selection = select(self.kind, settings)?;
         let mut report = ApplyReport {
             framework: self.framework.name,
@@ -890,10 +922,12 @@ impl RetentionVariant {
         }
         for plan in plans {
             eprintln!(
-                "Retention plan {}: restore with `doty restore --plan {}`; quarantine alone frees no disk space",
-                plan.id, plan.id
+                "Retention plan {}: restore with `doty --mode {} restore {}`; quarantine alone frees no disk space",
+                plan.id,
+                context.mode.as_str(),
+                plan.id
             );
-            let applied = crate::rm::apply_plan(&plan.id)?;
+            let applied = crate::rm::apply_plan_scoped(&plan.id, context)?;
             if self.kind != Kind::Retirement {
                 // Recheck descendants after rename, before irreversible purge.
                 // On failure the journal retains a restorable quarantine.
@@ -924,7 +958,7 @@ impl RetentionVariant {
                         );
                     }
                 }
-                crate::rm::purge_apply(&plan.id)?;
+                crate::rm::purge_apply_scoped(&plan.id, context)?;
             } else {
                 eprintln!(
                     "Review this retirement, then reclaim with `doty purge --plan {} --apply`",

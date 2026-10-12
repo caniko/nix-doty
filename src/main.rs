@@ -11,6 +11,7 @@ mod nix_ledger;
 pub mod reclaim;
 pub mod registry;
 pub mod rm;
+pub mod scope;
 mod scratch_ledger;
 pub mod targets;
 mod worktree;

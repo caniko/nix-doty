@@ -100,14 +100,15 @@ pub fn file_size(path: &str) -> Result<u64> {
 pub fn total_dir_size(path: &str) -> Result<u64> {
     let mut total = 0u64;
     fn visit(dir: &Path, total: &mut u64) -> Result<()> {
-        if dir.is_dir() {
+        if std::fs::symlink_metadata(dir)?.is_dir() {
             for entry in std::fs::read_dir(dir)? {
                 let entry = entry?;
                 let path = entry.path();
-                if path.is_dir() {
+                let metadata = std::fs::symlink_metadata(&path)?;
+                if metadata.is_dir() {
                     visit(&path, total)?;
-                } else {
-                    *total += entry.metadata()?.len();
+                } else if metadata.is_file() {
+                    *total += metadata.len();
                 }
             }
         }
@@ -124,7 +125,7 @@ pub fn total_dir_size_bounded(path: &str, max_entries: u64) -> Result<DirScan> {
             scan.truncated = true;
             return Ok(());
         }
-        if dir.is_dir() {
+        if std::fs::symlink_metadata(dir)?.is_dir() {
             for entry in std::fs::read_dir(dir)? {
                 if scan.entries >= max_entries {
                     scan.truncated = true;
@@ -133,10 +134,11 @@ pub fn total_dir_size_bounded(path: &str, max_entries: u64) -> Result<DirScan> {
                 let entry = entry?;
                 let path = entry.path();
                 scan.entries += 1;
-                if path.is_dir() {
+                let metadata = std::fs::symlink_metadata(&path)?;
+                if metadata.is_dir() {
                     visit(&path, max_entries, scan)?;
-                } else {
-                    scan.bytes = scan.bytes.saturating_add(entry.metadata()?.len());
+                } else if metadata.is_file() {
+                    scan.bytes = scan.bytes.saturating_add(metadata.len());
                 }
             }
         }
@@ -253,6 +255,22 @@ fn remove_stale_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn size_scans_do_not_follow_directory_symlinks() {
+        let root = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("foreign"), vec![0; 4096]).unwrap();
+        std::fs::write(root.path().join("local"), "local").unwrap();
+        std::os::unix::fs::symlink(outside.path(), root.path().join("link")).unwrap();
+        assert_eq!(total_dir_size(root.path().to_str().unwrap()).unwrap(), 5);
+        assert_eq!(
+            total_dir_size_bounded(root.path().to_str().unwrap(), 100)
+                .unwrap()
+                .bytes,
+            5
+        );
+    }
 
     #[test]
     fn remove_file_refuses_symlink() {

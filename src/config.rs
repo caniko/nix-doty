@@ -14,6 +14,9 @@ pub struct ConfiguredTarget {
 
 #[derive(Debug, Deserialize)]
 pub struct TargetDocument {
+    /// Unmarked legacy documents are system policy.
+    #[serde(default)]
+    pub mode: Option<crate::scope::Mode>,
     #[serde(default)]
     pub targets: Vec<ConfiguredTarget>,
     #[serde(default)]
@@ -30,14 +33,4 @@ pub struct Requirement {
 pub fn load_document(path: &str) -> Result<TargetDocument> {
     let content = std::fs::read_to_string(path).with_context(|| format!("cannot read {path}"))?;
     serde_json::from_str(&content).with_context(|| format!("cannot parse {path}"))
-}
-
-pub fn load_targets(path: &str) -> Result<Vec<ConfiguredTarget>> {
-    let content = std::fs::read_to_string(path).with_context(|| format!("cannot read {path}"))?;
-    parse_targets(&content).with_context(|| format!("cannot parse {path}"))
-}
-
-pub fn parse_targets(content: &str) -> Result<Vec<ConfiguredTarget>> {
-    let parsed: TargetDocument = serde_json::from_str(content)?;
-    Ok(parsed.targets)
 }

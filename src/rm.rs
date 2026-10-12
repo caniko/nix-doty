@@ -49,7 +49,14 @@ fn state_dir() -> PathBuf {
         return PathBuf::from(dir);
     }
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
-    PathBuf::from(home).join(".local/state/doty")
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(home).join(".local/state"))
+        .join("doty")
+}
+
+pub(crate) fn admit_state(context: &crate::scope::ExecutionContext) -> Result<()> {
+    context.admit_tree(&state_dir())
 }
 
 fn plans_dir() -> PathBuf {
@@ -1182,8 +1189,17 @@ pub fn describe_plan(id: &str) -> Result<RmPlan> {
 /// quarantined are re-verified and skipped, so interrupted batches resume
 /// instead of stranding the plan.
 pub fn apply_plan(id: &str) -> Result<RmPlan> {
+    apply_plan_scoped(id, &crate::scope::ExecutionContext::system())
+}
+
+pub(crate) fn apply_plan_scoped(
+    id: &str,
+    context: &crate::scope::ExecutionContext,
+) -> Result<RmPlan> {
+    admit_state(context)?;
     let _lock = lock_plan(id)?;
     let mut journaled = load_plan(id)?;
+    context.admit_plan(&journaled)?;
     reconcile_pending(&mut journaled)?;
     let plan = journaled.clone();
     // Whole-batch preflight for pending entries first: identity + policy.
@@ -1235,6 +1251,7 @@ pub fn apply_plan(id: &str) -> Result<RmPlan> {
 
     for index in pending {
         let target = &plan.targets[index];
+        context.admit_tree(&target.path)?;
         let destination = quarantine_destination(&plan, index, &target.path)?;
         if let Some(ledger) = &plan.scratch_ledger {
             ledger.require_released(&crate::scratch_ledger::paths(std::slice::from_ref(
@@ -1243,6 +1260,7 @@ pub fn apply_plan(id: &str) -> Result<RmPlan> {
         }
         journaled.targets[index].pending_op = Some(PendingOp::Quarantine);
         journal_write(&journaled)?;
+        context.admit_tree(&target.path)?;
         rename_contained(&plan.root, &target.path, &destination).with_context(|| {
             format!(
                 "cannot quarantine {} (journaled progress kept in plan {id})",
@@ -1266,8 +1284,14 @@ pub fn apply_plan(id: &str) -> Result<RmPlan> {
 /// batch restores its quarantined subset); use `describe` to review entry
 /// states. Restoring a fully unapplied plan is a no-op.
 pub fn restore(id: &str) -> Result<RmPlan> {
+    restore_scoped(id, &crate::scope::ExecutionContext::system())
+}
+
+pub(crate) fn restore_scoped(id: &str, context: &crate::scope::ExecutionContext) -> Result<RmPlan> {
+    admit_state(context)?;
     let _lock = lock_plan(id)?;
     let mut journaled = load_plan(id)?;
+    context.admit_plan(&journaled)?;
     reconcile_pending(&mut journaled)?;
     let plan = journaled.clone();
     // Two-phase: verify every pending restore before moving the first.
@@ -1314,6 +1338,8 @@ pub fn restore(id: &str) -> Result<RmPlan> {
             .quarantined_as
             .clone()
             .expect("checked above");
+        context.admit_tree(&destination)?;
+        context.admit_path(&journaled.targets[index].path)?;
         let id = journaled.id.clone();
         journaled.targets[index].pending_op = Some(PendingOp::Restore);
         journal_write(&journaled)?;
@@ -1345,8 +1371,17 @@ pub fn purge_preview(id: &str) -> Result<RmPlan> {
 /// purges resume. This is the only function in doty that deletes approved
 /// scratch data.
 pub fn purge_apply(id: &str) -> Result<RmPlan> {
+    purge_apply_scoped(id, &crate::scope::ExecutionContext::system())
+}
+
+pub(crate) fn purge_apply_scoped(
+    id: &str,
+    context: &crate::scope::ExecutionContext,
+) -> Result<RmPlan> {
+    admit_state(context)?;
     let _lock = lock_plan(id)?;
     let mut journaled = load_plan(id)?;
+    context.admit_plan(&journaled)?;
     reconcile_pending(&mut journaled)?;
     let plan = journaled.clone();
     // Two-phase: verify every pending purge before deleting the first.
@@ -1407,6 +1442,7 @@ pub fn purge_apply(id: &str) -> Result<RmPlan> {
         }
         // Re-check identity at deletion time: the preflight above and this
         // check bracket the batch, but entries are removed one by one.
+        context.admit_tree(&destination)?;
         let meta = std::fs::symlink_metadata(&destination)
             .with_context(|| format!("quarantined entry missing: {}", destination.display()))?;
         if !metadata_matches(&meta, &expected) {

@@ -2,7 +2,16 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Doty defaults to caller-local user policy under `$XDG_CONFIG_HOME/doty`.
+  Existing machine-wide invocations must select `--mode system`. Unmarked legacy
+  target documents remain system policy. See `docs/execution-modes.md`.
+
 ### Fixed
+
+- `--force` cannot mutate ReportOnly targets. UV inspection and cleanup bind
+  the same cache directory; size scans do not traverse symlinked directories.
 
 - Reclaim checks the exact requested available-byte goal independently of the
   usage threshold, stops completed plans early, and exits unsuccessfully for
@@ -18,6 +27,11 @@
   pin these tools in the installed runtime wrapper.
 
 ### Added
+
+- Shared user/system execution context with caller-owned root admission, scoped
+  retention/trash/UV providers, and guarded standalone removal commands.
+- Home Manager module with shared target rendering and an optional user timer;
+  the NixOS timer explicitly selects system mode.
 
 - Closeout-based `doty worktree remove` preview/apply with verified external
   artifacts, retained branches, worker/protection checks, and optional existing

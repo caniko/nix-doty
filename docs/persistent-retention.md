@@ -77,9 +77,9 @@ services.doty.targets.cargo-builds = {
 ```
 
 ```sh
-doty status --target cargo-builds --variant prune-incremental --json
-doty run --target cargo-builds --variant prune-incremental
-doty run --target cargo-builds --variant prune-incremental --apply --force
+doty --mode system status --target cargo-builds --variant prune-incremental --json
+doty --mode system run --target cargo-builds --variant prune-incremental
+doty --mode system run --target cargo-builds --variant prune-incremental --apply --force
 ```
 
 ## Retirement and recovery
@@ -93,9 +93,9 @@ renames entries into a same-filesystem quarantine. It prints the plan ID. The
 bytes remain allocated until a separate purge:
 
 ```sh
-doty restore --plan PLAN_ID
-doty purge --plan PLAN_ID
-doty purge --plan PLAN_ID --apply
+doty --mode system restore PLAN_ID
+doty --mode system purge PLAN_ID
+doty --mode system purge PLAN_ID --apply
 ```
 
 Regenerable caches, Cargo outputs and retired models use that same journaled,

@@ -74,7 +74,7 @@
             nativeBuildInputs = commonArgs.nativeBuildInputs ++ [pkgs.makeWrapper];
             postInstall = ''
               wrapProgram "$out/bin/doty" \
-                --prefix PATH : ${lib.makeBinPath commonArgs.nativeBuildInputs}
+                --prefix PATH : ${lib.makeBinPath (commonArgs.nativeBuildInputs ++ [pkgs.uv])}
             '';
             meta = {
               mainProgram = "doty";
@@ -120,6 +120,16 @@
         lib.scratchAssessmentVersion = 1;
         lib.nixOperationVersion = 1;
         lib.goalDrivenReclaimVersion = 1;
+        lib.executionScopeVersion = 1;
+        homeManagerModules.default = {
+          pkgs,
+          lib,
+          ...
+        }: {
+          imports = [./module/home.nix];
+          programs.doty.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        };
+        homeModules.default = self.homeManagerModules.default;
         crossPackages."x86_64-linux"."aarch64-linux".doty = self.packages."x86_64-linux"."doty-aarch64-linux";
         nixosModules.default = {pkgs, ...}: {
           imports = [./module/default.nix];

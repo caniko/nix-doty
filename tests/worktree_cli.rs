@@ -102,7 +102,7 @@ impl Fixture {
     fn run(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_doty"))
             .env_remove("CHAOSBOX_SCRATCH_WORK")
-            .args(["worktree", "remove", "--closeout"])
+            .args(["--mode", "system", "worktree", "remove", "--closeout"])
             .arg(&self.closeout)
             .arg("--json")
             .args(args)
@@ -124,6 +124,42 @@ impl Fixture {
         assert!(self.worktree.exists());
         assert_eq!(git(&self.repo, &["rev-parse", "finalized"]), self.head);
     }
+}
+
+#[test]
+fn user_mode_requires_owned_roots_and_can_remove_a_local_finalized_worktree() {
+    let fixture = Fixture::new();
+    let invoke = |home: &Path| {
+        Command::new(env!("CARGO_BIN_EXE_doty"))
+            .env("HOME", home)
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_CACHE_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("CHAOSBOX_SCRATCH_WORK")
+            .env_remove("CHAOSBOX_SCRATCH_ROOT")
+            .args(["worktree", "remove", "--closeout"])
+            .arg(&fixture.closeout)
+            .args(["--apply", "--json"])
+            .output()
+            .unwrap()
+    };
+    let unrelated = tempfile::tempdir().unwrap();
+    let rejected = invoke(unrelated.path());
+    assert!(!rejected.status.success());
+    assert!(fixture.worktree.exists());
+    let result = invoke(fixture._dir.path());
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!fixture.worktree.exists());
+    assert_eq!(
+        git(&fixture.repo, &["rev-parse", "finalized"]),
+        fixture.head
+    );
+    assert!(fixture.closeout.exists());
 }
 
 #[test]
@@ -418,7 +454,7 @@ fn git_environment_cannot_redirect_removal() {
         .env_remove("CHAOSBOX_SCRATCH_WORK")
         .env("GIT_DIR", fixture.repo.join(".git"))
         .env("GIT_WORK_TREE", &fixture.repo)
-        .args(["worktree", "remove", "--closeout"])
+        .args(["--mode", "system", "worktree", "remove", "--closeout"])
         .arg(&fixture.closeout)
         .args(["--apply", "--json"])
         .output()

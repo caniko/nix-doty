@@ -9,6 +9,12 @@ use clap::{Parser, Subcommand};
     long_about = "doty inspects and cleans temporary state accumulated by NixOS services and frameworks. Each framework has one or more cleanup variants with tiered safety (safe, confirm, risky, report-only). Run `doty status` to inspect, `doty run` to act. Dry-run by default."
 )]
 pub struct Cli {
+    /// Execution policy (ordinary invocations use caller-local housekeeping)
+    #[arg(long, global = true, value_enum, default_value = "user")]
+    mode: crate::scope::Mode,
+    /// Additional caller-owned root for external caches, scratch or worktrees
+    #[arg(long, global = true)]
+    user_root: Vec<std::path::PathBuf>,
     #[command(flatten)]
     ledger: crate::scratch_ledger::Options,
     #[command(subcommand)]
@@ -51,8 +57,8 @@ pub enum Command {
         #[arg(short, long, value_name = "VARIANT")]
         variant: Option<String>,
         /// Path to configured targets.json
-        #[arg(long, default_value = crate::config::DEFAULT_CONFIG_PATH)]
-        config: String,
+        #[arg(long)]
+        config: Option<String>,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -66,8 +72,8 @@ pub enum Command {
         #[arg(short, long, value_name = "VARIANT")]
         variant: Option<String>,
         /// Path to configured targets.json
-        #[arg(long, default_value = crate::config::DEFAULT_CONFIG_PATH)]
-        config: String,
+        #[arg(long)]
+        config: Option<String>,
         /// Actually perform cleanup (default is dry-run)
         #[arg(long)]
         apply: bool,
@@ -81,8 +87,8 @@ pub enum Command {
     /// Compare installed targets against NixOS-declared config
     Doctor {
         /// Path to the NixOS-declared targets.json
-        #[arg(long, default_value = "/etc/doty/targets.json")]
-        config: String,
+        #[arg(long)]
+        config: Option<String>,
         /// Compare activated configuration to an evaluated candidate document
         #[arg(long)]
         expected_config: Option<String>,
@@ -93,8 +99,8 @@ pub enum Command {
     /// Remove scratch paths via a guarded plan (dry-run preview by default)
     Rm {
         /// Allowed root all targets must live under
-        #[arg(long, default_value = crate::rm::DEFAULT_SCRATCH_ROOT)]
-        root: String,
+        #[arg(long)]
+        root: Option<String>,
         /// Actually quarantine (default only plans)
         #[arg(long)]
         apply: bool,
@@ -132,8 +138,8 @@ pub enum Command {
     /// Reclaim disk space on full mounts (dry-run by default)
     Reclaim {
         /// Path to configured targets.json
-        #[arg(long, default_value = crate::config::DEFAULT_CONFIG_PATH)]
-        config: String,
+        #[arg(long)]
+        config: Option<String>,
         /// Only plan/reclaim for specific mount point
         #[arg(short, long, value_name = "MOUNT")]
         mount: Option<String>,
@@ -165,22 +171,35 @@ pub enum Command {
 
 impl Cli {
     pub fn run(self) -> Result<()> {
+        let context = crate::scope::ExecutionContext::current(self.mode, &self.user_root)?;
         let ledger = self.ledger.config()?;
+        if context.mode == crate::scope::Mode::User {
+            if let Some(ledger) = &ledger {
+                ledger.admit_scope(&context)?;
+            }
+        }
         match self.command {
-            Command::Worktree { command } => command.run(ledger.as_ref()),
+            Command::Worktree { command } => command.run(ledger.as_ref(), &context),
             Command::NixStore { path, offset } => {
                 let result = crate::nix_ledger::inspect(path.as_deref(), offset)?;
                 println!("{}", serde_json::to_string_pretty(&result)?);
                 Ok(())
             }
-            Command::Analyze { agent } => agent.run(ledger.as_ref()),
-            Command::List { json } => crate::commands::list(json),
+            Command::Analyze { agent } => agent.run(ledger.as_ref(), &context),
+            Command::List { json } => crate::commands::list(json, &context),
             Command::Status {
                 target,
                 variant,
                 config,
                 json,
-            } => crate::commands::status(target, variant, &config, json, ledger.as_ref()),
+            } => crate::commands::status(
+                target,
+                variant,
+                &context.config_path(config)?,
+                json,
+                ledger.as_ref(),
+                &context,
+            ),
             Command::Run {
                 target,
                 variant,
@@ -191,26 +210,44 @@ impl Cli {
             } => crate::commands::run(
                 target,
                 variant,
-                &config,
-                apply,
-                force,
-                json,
+                &context.config_path(config)?,
+                crate::commands::RunOptions { apply, force, json },
                 ledger.as_ref(),
+                &context,
             ),
             Command::Doctor {
                 config,
                 expected_config,
                 json,
-            } => crate::commands::doctor(&config, expected_config.as_deref(), json),
+            } => crate::commands::doctor(
+                &context.config_path(config)?,
+                expected_config.as_deref(),
+                json,
+                &context,
+            ),
             Command::Rm {
                 root,
                 apply,
                 plan,
                 targets,
                 json,
-            } => crate::commands::rm(&root, apply, plan.as_deref(), &targets, json, ledger),
-            Command::Restore { plan, json } => crate::commands::restore(&plan, json),
-            Command::Purge { plan, apply, json } => crate::commands::purge(&plan, apply, json),
+            } => {
+                let root =
+                    root.unwrap_or_else(|| context.scratch_root().to_string_lossy().into_owned());
+                crate::commands::rm(
+                    &root,
+                    apply,
+                    plan.as_deref(),
+                    &targets,
+                    json,
+                    ledger,
+                    &context,
+                )
+            }
+            Command::Restore { plan, json } => crate::commands::restore(&plan, json, &context),
+            Command::Purge { plan, apply, json } => {
+                crate::commands::purge(&plan, apply, json, &context)
+            }
             Command::Reclaim {
                 config,
                 mount,
@@ -223,7 +260,8 @@ impl Cli {
                 limits,
                 json,
             } => crate::commands::reclaim(crate::reclaim::ReclaimConfig {
-                config_path: config,
+                config_path: context.config_path(config)?,
+                context,
                 mount,
                 threshold_pct: threshold,
                 min_free_bytes,

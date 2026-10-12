@@ -125,6 +125,10 @@ impl Options {
 }
 
 impl Config {
+    pub(crate) fn admit_scope(&self, context: &crate::scope::ExecutionContext) -> Result<()> {
+        context.admit_path(&self.root)?;
+        context.admit_path(&self.work)
+    }
     /// Admit an existing allocation for a preservation assertion, not a release.
     pub(crate) fn preservation_allocation(&self, path: &Path, worktree: &Path) -> Result<Value> {
         if self.work.canonicalize()?.starts_with(worktree) {

@@ -96,6 +96,7 @@ pub enum TargetScope {
 
 #[derive(Debug, Clone)]
 pub struct ReclaimConfig {
+    pub context: crate::scope::ExecutionContext,
     pub config_path: String,
     pub mount: Option<String>,
     pub threshold_pct: f64,
@@ -111,6 +112,7 @@ pub struct ReclaimConfig {
 impl Default for ReclaimConfig {
     fn default() -> Self {
         Self {
+            context: crate::scope::ExecutionContext::system(),
             config_path: crate::config::DEFAULT_CONFIG_PATH.into(),
             mount: None,
             threshold_pct: 85.0,
@@ -161,6 +163,8 @@ pub fn plan(config: &ReclaimConfig) -> Result<ReclaimReport> {
             && config.limits.gc_pass_bytes > 0,
         "reclaim budgets must be positive; timeout must be at most 86400 seconds"
     );
+    // Admit the complete policy even when no filesystem currently needs cleanup.
+    crate::commands::select_variants(None, None, &config.config_path, &config.context)?;
     let all_mounts = mount::read_mounts()?;
     let groups = filesystem_groups(&all_mounts);
     let selected_keys = selected_filesystem_keys(config, &groups)?;
@@ -449,7 +453,10 @@ fn execute_target(
     }
 
     eprintln!("reclaim: {}/{}", target.framework, target.variant);
-    match variant.reclaim_with_settings(config.force, &target.settings, context) {
+    let settings = config
+        .context
+        .settings(variant.user_scope(), &target.settings)?;
+    match variant.reclaim_scoped(config.force, &settings, context, &config.context) {
         Ok(apply_report) => {
             target.actual_freed_bytes = apply_report.freed_bytes;
             target.status = if apply_report.errors.is_empty() {
@@ -595,7 +602,9 @@ fn inspect_targets(
 ) -> Result<Vec<ResolvedTarget>> {
     let mut targets = Vec::new();
 
-    for selected in crate::commands::select_variants(None, None, &config.config_path)? {
+    for selected in
+        crate::commands::select_variants(None, None, &config.config_path, &config.context)?
+    {
         let variant = selected.variant;
         let tier = variant.tier();
         let mut skip_reason = None;

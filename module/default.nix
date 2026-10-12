@@ -5,115 +5,37 @@
   ...
 }: let
   cfg = config.services.doty;
-  entriesForTarget = name: t:
-    if t.variants != []
-    then
-      map (v: {
-        inherit name;
-        inherit (v) variant;
-        settings = v.settings or {};
-      })
-      t.variants
-    else [
-      {
-        inherit name;
-        inherit (t) variant;
-        inherit (t) settings;
-      }
-    ];
-  targetEntries = lib.flatten (
-    lib.mapAttrsToList (
-      name: t:
-        entriesForTarget name t
-    ) (lib.filterAttrs (_n: t: t.enable) cfg.targets)
-  );
-  targetsJson = pkgs.writeText "doty-targets.json" (builtins.toJSON {
-    targets = targetEntries;
-    requirements = cfg.inspectionRequirements;
-  });
+  policy = import ./policy.nix {inherit lib;};
+  targetsJson = pkgs.writeText "doty-targets.json" (builtins.toJSON (policy.document "system" cfg));
 in {
   options.services.doty = {
-    enable = lib.mkEnableOption "doty cleanup orchestrator";
+    enable = lib.mkEnableOption "doty system cleanup orchestrator";
     package = lib.mkOption {
       type = lib.types.package;
-      description = "doty package to use";
+      description = "Doty package to use.";
     };
     schedule = lib.mkOption {
       type = lib.types.str;
       default = "weekly";
-      example = "daily";
-      description = "Systemd OnCalendar schedule for combined cleanup timer";
+      description = "Systemd OnCalendar schedule for system cleanup.";
     };
-    inspectionRequirements = lib.mkOption {
-      type = lib.types.listOf (lib.types.submodule {
-        options = {
-          name = lib.mkOption {type = lib.types.str;};
-          variant = lib.mkOption {type = lib.types.str;};
-          path = lib.mkOption {type = lib.types.str;};
-        };
-      });
-      default = [];
-      description = "Required read-only provider/path coverage checked by doty doctor.";
-    };
-    targets = lib.mkOption {
-      type = lib.types.attrsOf (lib.types.submodule {
-        options = {
-          enable = lib.mkEnableOption "this doty cleanup target";
-          variant = lib.mkOption {
-            type = lib.types.nullOr lib.types.str;
-            default = null;
-            example = "clean";
-            description = "Single cleanup variant to use. Preserved for compatibility; prefer variants for new configuration.";
-          };
-          settings = lib.mkOption {
-            type = lib.types.attrsOf lib.types.anything;
-            default = {};
-            description = "Variant-specific configuration for the legacy single-variant form";
-          };
-          variants = lib.mkOption {
-            type = lib.types.listOf (lib.types.submodule {
-              options = {
-                variant = lib.mkOption {
-                  type = lib.types.str;
-                  description = "Cleanup variant to use (e.g. nh-clean, size-cap)";
-                };
-                settings = lib.mkOption {
-                  type = lib.types.attrsOf lib.types.anything;
-                  default = {};
-                  description = "Variant-specific configuration";
-                };
-              };
-            });
-            default = [];
-            description = "Multiple cleanup variants to configure for this framework";
-          };
-        };
-      });
-      default = {};
-      description = "Doty cleanup targets to enable on this host";
-    };
+    inspectionRequirements = policy.requirementsOption;
+    targets = policy.targetsOption;
   };
-
   config = lib.mkIf cfg.enable {
-    assertions = lib.mapAttrsToList (name: t: {
-      assertion = t.variants != [] || t.variant != null;
-      message = "services.doty.targets.${name} must set either variant or variants";
-    }) (lib.filterAttrs (_n: t: t.enable) cfg.targets);
-
+    assertions = policy.assertions "services.doty" cfg;
     environment.systemPackages = [cfg.package];
     environment.etc."doty/targets.json".source = targetsJson;
-
     systemd.services.doty-all = {
-      description = "doty: run all configured cleanup targets";
+      description = "doty: run configured system cleanup targets";
       serviceConfig = {
         Type = "oneshot";
-        ExecStart = "${lib.getExe cfg.package} run --apply";
+        ExecStart = "${lib.getExe cfg.package} --mode system run --apply";
         User = "root";
       };
     };
-
     systemd.timers.doty-all = {
-      description = "doty: weekly cleanup of all targets";
+      description = "doty: scheduled system cleanup";
       wantedBy = ["timers.target"];
       timerConfig = {
         OnCalendar = cfg.schedule;

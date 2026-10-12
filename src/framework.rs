@@ -61,6 +61,10 @@ pub trait Variant: Sync {
     fn name(&self) -> &'static str;
     fn framework(&self) -> &'static dyn Framework;
     fn tier(&self) -> Tier;
+    /// Providers opt in only once all their execution paths honor local settings.
+    fn user_scope(&self) -> crate::scope::UserScope {
+        crate::scope::UserScope::SystemOnly
+    }
     fn inspect(&self) -> Result<Inspection>;
     fn apply(&self, apply: bool, force: bool) -> Result<ApplyReport>;
     /// Pure scan-surface discovery for doctor, including provider-owned defaults.
@@ -87,6 +91,32 @@ pub trait Variant: Sync {
         _settings: &Value,
     ) -> Result<ApplyReport> {
         self.apply(apply, force)
+    }
+    fn apply_scoped(
+        &self,
+        apply: bool,
+        force: bool,
+        settings: &Value,
+        context: &crate::scope::ExecutionContext,
+    ) -> Result<ApplyReport> {
+        let settings = context.settings(self.user_scope(), settings)?;
+        self.apply_with_settings(apply, force, &settings)
+    }
+    fn reclaim_scoped(
+        &self,
+        force: bool,
+        settings: &Value,
+        action: &crate::reclaim::runtime::ActionContext<'_>,
+        context: &crate::scope::ExecutionContext,
+    ) -> Result<ReclaimResult> {
+        if context.mode == crate::scope::Mode::System {
+            self.reclaim_with_settings(force, settings, action)
+        } else {
+            crate::reclaim::runtime::with_deadline(action.runtime.deadline, || {
+                self.apply_scoped(true, force, settings, context)
+                    .map(Into::into)
+            })
+        }
     }
     fn reclaim_with_settings(
         &self,
