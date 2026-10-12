@@ -38,9 +38,13 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::with_worktree_name("linked worktree")
+    }
+
+    fn with_worktree_name(name: &str) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("owner");
-        let worktree = dir.path().join("linked worktree");
+        let worktree = dir.path().join(name);
         let evidence = dir.path().join("evidence");
         fs::create_dir(&repo).unwrap();
         fs::create_dir(&evidence).unwrap();
@@ -443,6 +447,61 @@ fn active_worker_path_lists_and_structured_arguments_block_removal() {
         );
         assert!(worker.0.try_wait().unwrap().is_none());
         fixture.rejects("command references the worktree");
+    }
+}
+
+#[test]
+fn active_worker_mapping_with_escaped_pathname_blocks_removal() {
+    if let Some(path) = std::env::var_os("DOTY_FIXTURE_MAP_FILE") {
+        use std::{io::Read, os::fd::AsRawFd};
+        let file = fs::File::open(path).unwrap();
+        let length = file.metadata().unwrap().len() as usize;
+        // SAFETY: map the live fixture descriptor read-only, without dereferencing it.
+        let mapping = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                length,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(mapping, libc::MAP_FAILED);
+        drop(file);
+        fs::write(std::env::var_os("DOTY_FIXTURE_MAP_READY").unwrap(), "ready").unwrap();
+        let _ = std::io::stdin().read_exact(&mut [0]);
+        // SAFETY: this is the exact mapping and length returned by mmap above.
+        unsafe { libc::munmap(mapping, length) };
+        return;
+    }
+    for name in ["linked\nworktree", "linked\\012\nworktree"] {
+        let fixture = Fixture::with_worktree_name(name);
+        let ready = fixture
+            .closeout
+            .parent()
+            .unwrap()
+            .join("mapped-worker-ready");
+        let mut worker = Worker(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "active_worker_mapping_with_escaped_pathname_blocks_removal",
+                ])
+                .env("DOTY_FIXTURE_MAP_FILE", fixture.worktree.join("source.txt"))
+                .env("DOTY_FIXTURE_MAP_READY", &ready)
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let started = std::time::Instant::now();
+        while !ready.exists() {
+            assert!(worker.0.try_wait().unwrap().is_none());
+            assert!(started.elapsed() < std::time::Duration::from_secs(5));
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        fixture.rejects("maps worktree content");
     }
 }
 

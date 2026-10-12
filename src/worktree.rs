@@ -638,6 +638,10 @@ fn marker_present(path: &Path) -> Result<bool> {
 #[cfg(target_os = "linux")]
 fn check_workers(worktree: &Path) -> Result<Vec<u32>> {
     let uid = fs::metadata("/proc/self")?.uid();
+    // /proc/maps escapes newlines as \\012, but leaves literal backslashes
+    // unchanged. Compare in that representation to preserve mixed names and
+    // conservatively protect the kernel's ambiguous newline/literal spelling.
+    let maps_worktree = PathBuf::from(text(worktree)?.replace('\n', "\\012"));
     let mut omissions = Vec::new();
     let mut remaining = 1_000_000usize;
     for process in fs::read_dir("/proc")? {
@@ -732,7 +736,7 @@ fn check_workers(worktree: &Path) -> Result<Vec<u32>> {
                 if let Some(offset) = line.find('/') {
                     ensure!(
                         !Path::new(line[offset..].trim_end_matches(" (deleted)"))
-                            .starts_with(worktree),
+                            .starts_with(&maps_worktree),
                         "active worker {} maps worktree content",
                         process.file_name().to_string_lossy()
                     );
