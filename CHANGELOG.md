@@ -10,6 +10,12 @@
 
 ### Fixed
 
+- Worktree removal recognizes live-worker path references in path lists and
+  structured command arguments, including colon and comma delimiters.
+- Recorded removal plans validate their root, plan ID, quarantine directory,
+  and deterministic payload paths before preview, recovery, restore, or purge.
+- User trash cleanup refuses symlinked `files` and `info` directories before
+  inspection or execution while preserving safe unlinking of trashed links.
 - `--force` cannot mutate ReportOnly targets. UV inspection and cleanup bind
   the same cache directory; size scans do not traverse symlinked directories.
 
