@@ -425,6 +425,28 @@ fn active_worker_cwd_and_external_file_descriptor_block_removal() {
 }
 
 #[test]
+fn active_worker_path_lists_and_structured_arguments_block_removal() {
+    for suffix in [":/other", ",mode=read", ";/other", ")", "]", "}", "=read"] {
+        let fixture = Fixture::new();
+        // The worker has no checkout fd or cwd. Its argv alone reserves it.
+        let mut worker = Worker(
+            Command::new("sh")
+                .args(["-c", "read -r line"])
+                .arg(format!(
+                    "--search-path={}{}",
+                    fixture.worktree.display(),
+                    suffix
+                ))
+                .stdin(std::process::Stdio::piped())
+                .spawn()
+                .unwrap(),
+        );
+        assert!(worker.0.try_wait().unwrap().is_none());
+        fixture.rejects("command references the worktree");
+    }
+}
+
+#[test]
 fn unsafe_evidence_paths_wrong_owner_and_missing_bundle_candidate_are_rejected() {
     let fixture = Fixture::new();
     fixture.edit_manifest(|doc| {

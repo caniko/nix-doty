@@ -676,10 +676,21 @@ fn check_workers(worktree: &Path) -> Result<Vec<u32>> {
                         .windows(needle.len())
                         .enumerate()
                         .any(|(i, bytes)| bytes == needle
-                            && command
-                                .get(i + needle.len())
-                                .is_none_or(|b| b.is_ascii_whitespace()
-                                    || matches!(b, b'/' | 0 | b'\'' | b'"'))),
+                            && command.get(i + needle.len()).is_none_or(|b| b
+                                .is_ascii_whitespace()
+                                || matches!(
+                                    b,
+                                    b'/' | 0
+                                        | b'\''
+                                        | b'"'
+                                        | b':'
+                                        | b','
+                                        | b';'
+                                        | b')'
+                                        | b']'
+                                        | b'}'
+                                        | b'='
+                                ))),
                 "active worker {pid} command references the worktree"
             );
             for link in [path.join("cwd"), path.join("exe")] {
