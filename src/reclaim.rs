@@ -642,7 +642,14 @@ fn inspect_targets(
             continue;
         }
 
-        let paths = target_paths(&inspection.path);
+        // Display text is a lossy path-list format. Prefer the provider's
+        // structured scan surface, including resolved user-mode defaults.
+        let scan_paths = variant.scan_paths(&selected.settings);
+        let paths = if scan_paths.is_empty() {
+            target_paths(&inspection.path)
+        } else {
+            scan_paths
+        };
         let mut filesystem_keys = BTreeSet::new();
         let mut surfaces = BTreeSet::new();
         for path in &paths {
@@ -1363,6 +1370,34 @@ mod tests {
         assert_eq!(report.totals.total_actual_freed_bytes, Some(100));
         assert_eq!(report.totals.net_available_change_bytes, Some(-10));
         assert!(ensure_success(&report).is_err());
+    }
+
+    #[test]
+    fn configured_reclaim_keeps_commas_inside_exact_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache,/mnt/data");
+        let policy = dir.path().join("targets.json");
+        std::fs::write(
+            &policy,
+            serde_json::json!({"targets":[{
+                "name":"uv-cache", "variant":"clean", "settings":{"cacheDir":cache}
+            }]})
+            .to_string(),
+        )
+        .unwrap();
+        let config = ReclaimConfig {
+            config_path: policy.to_str().unwrap().into(),
+            ..Default::default()
+        };
+        let groups = filesystem_groups(&[
+            mount("/", "root", 1000, 960),
+            mount("/mnt/data", "other", 1000, 960),
+        ]);
+        let targets = inspect_targets(&config, &groups).unwrap();
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].target.paths, vec![cache.to_str().unwrap()]);
+        assert_eq!(targets[0].target.scope, TargetScope::SingleSurface);
+        assert_eq!(targets[0].target.surfaces, vec!["/"]);
     }
 
     #[test]
