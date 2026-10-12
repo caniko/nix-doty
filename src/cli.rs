@@ -17,6 +17,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Command {
+    /// Remove an already-finalized linked Git worktree (preview by default)
+    Worktree {
+        #[command(subcommand)]
+        command: crate::worktree::Command,
+    },
     /// Inspect tracked Nix objects and their reasons; read-only, never releases roots or runs GC
     NixStore {
         /// Exact store path, to inspect all recorded consumers
@@ -162,6 +167,7 @@ impl Cli {
     pub fn run(self) -> Result<()> {
         let ledger = self.ledger.config()?;
         match self.command {
+            Command::Worktree { command } => command.run(ledger.as_ref()),
             Command::NixStore { path, offset } => {
                 let result = crate::nix_ledger::inspect(path.as_deref(), offset)?;
                 println!("{}", serde_json::to_string_pretty(&result)?);

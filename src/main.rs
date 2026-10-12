@@ -13,6 +13,7 @@ pub mod registry;
 pub mod rm;
 mod scratch_ledger;
 pub mod targets;
+mod worktree;
 
 fn main() -> anyhow::Result<()> {
     let cli = <cli::Cli as clap::Parser>::parse();

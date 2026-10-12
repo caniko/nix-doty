@@ -19,6 +19,10 @@
 
 ### Added
 
+- Closeout-based `doty worktree remove` preview/apply with verified external
+  artifacts, retained branches, worker/protection checks, and optional existing
+  Chaosbox allocation links. See `docs/worktree-removal.md`.
+
 - Goal-driven Nix reclaim: retention is applied once (three generations and
   14 days by default), preserving gcroots and direnv roots, followed by bounded
   GC passes. Runtime and logical-byte budgets, streamed progress, bounded log
