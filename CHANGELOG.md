@@ -10,6 +10,12 @@
 
 ### Fixed
 
+- Reclaim preserves structured provider paths instead of splitting configurable
+  pathnames on commas when assigning filesystem surfaces.
+- Worktree removal protects closed-descriptor memory mappings with newline and
+  mixed literal-escape pathnames in Linux process maps.
+- Removal follow-up commands preserve mode and explicit user roots with shell
+  quoting; JSON previews contain no trailing human instructions.
 - Worktree removal recognizes live-worker path references in path lists and
   structured command arguments, including colon and comma delimiters.
 - Recorded removal plans validate their root, plan ID, quarantine directory,
