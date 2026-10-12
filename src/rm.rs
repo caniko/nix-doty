@@ -26,10 +26,10 @@
 //! to walk from). Do not run this against a live adversary racing every
 //! syscall — it is built for accidents, not attacks.
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
 use std::os::unix::fs::MetadataExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::guard::{self, GuardedPath};
@@ -211,7 +211,44 @@ fn load_plan(id: &str) -> Result<RmPlan> {
     check_plan_id(id)?;
     let content = std::fs::read_to_string(plan_path(id))
         .with_context(|| format!("unknown removal plan: {id}"))?;
-    serde_json::from_str(&content).with_context(|| format!("cannot parse plan {id}"))
+    let plan: RmPlan =
+        serde_json::from_str(&content).with_context(|| format!("cannot parse plan {id}"))?;
+    ensure!(plan.id == id, "recorded plan id does not match {id}");
+    // The state file is caller-writable. Identity checks alone cannot authorize
+    // an arbitrary file recorded as a quarantine payload, including on resume.
+    let normalized = |path: &Path| {
+        path.is_absolute()
+            && path
+                .components()
+                .all(|part| matches!(part, Component::RootDir | Component::Normal(_)))
+    };
+    ensure!(
+        normalized(&plan.root),
+        "recorded plan root is not normalized"
+    );
+    ensure!(
+        plan.quarantine_dir == plan.root.join(QUARANTINE_DIR_NAME),
+        "recorded quarantine must be root/{QUARANTINE_DIR_NAME}"
+    );
+    for (index, target) in plan.targets.iter().enumerate() {
+        ensure!(
+            normalized(&target.path)
+                && target.path != plan.root
+                && target.path.starts_with(&plan.root)
+                && !target.path.starts_with(&plan.quarantine_dir),
+            "recorded target is not strictly inside the removal root: {}",
+            target.path.display()
+        );
+        if let Some(destination) = &target.quarantined_as {
+            ensure!(
+                normalized(destination)
+                    && *destination == quarantine_destination(&plan, index, &target.path)?,
+                "recorded quarantine payload does not match its plan entry: {}",
+                destination.display()
+            );
+        }
+    }
+    Ok(plan)
 }
 
 /// Private directory: created if missing, permissions forced to 0700.

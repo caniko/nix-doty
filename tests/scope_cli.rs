@@ -2,7 +2,7 @@
 use serde_json::{Value, json};
 use std::{
     fs,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{MetadataExt, PermissionsExt},
     process::{Command, Output},
 };
 
@@ -316,6 +316,58 @@ fn restore_and_purge_reject_forged_external_plan_paths() {
         let output = f.run(&args);
         assert!(!output.status.success());
         assert!(String::from_utf8_lossy(&output.stderr).contains("outside caller roots"));
+    }
+}
+
+#[test]
+fn purge_rejects_forged_quarantine_relationships_without_mutation() {
+    for mode in ["user", "system"] {
+        for (quarantine_name, payload) in [
+            ("ordinary-data", "unrelated-file"),
+            (".doty-quarantine", "unrelated-file"),
+            (".doty-quarantine", "nested/forged-0-original"),
+        ] {
+            let f = Fixture::new();
+            let root = f.home.path().join("scratch");
+            let quarantine = root.join(quarantine_name);
+            let sentinel = quarantine.join(payload);
+            fs::create_dir_all(sentinel.parent().unwrap()).unwrap();
+            fs::write(&sentinel, "not quarantined by doty").unwrap();
+            let meta = fs::metadata(&sentinel).unwrap();
+            let plans = f.home.path().join(".local/state/doty/rm-plans");
+            fs::create_dir_all(&plans).unwrap();
+            let plan_file = plans.join("forged.json");
+            let contents = json!({
+                "id":"forged", "created_at":"test", "root":root,
+                "quarantine_dir":quarantine, "targets":[{
+                    "path":root.join("original"), "dev":meta.dev(), "ino":meta.ino(),
+                    "is_dir":false, "size":meta.len(), "mtime_secs":meta.mtime(),
+                    "mtime_nanos":meta.mtime_nsec(), "quarantined_as":sentinel
+                }]
+            })
+            .to_string();
+            fs::write(&plan_file, &contents).unwrap();
+            for args in [
+                vec!["purge", "forged", "--apply", "--json"],
+                vec!["purge", "forged", "--json"],
+                vec!["restore", "forged", "--json"],
+                vec!["rm", "--plan", "forged", "--apply", "--json"],
+            ] {
+                let mut invocation = vec!["--mode", mode];
+                invocation.extend(args);
+                let output = f.run(&invocation);
+                assert!(
+                    !output.status.success(),
+                    "{mode}: {quarantine_name}: {payload}"
+                );
+                assert!(String::from_utf8_lossy(&output.stderr).contains("quarantine"));
+                assert_eq!(
+                    fs::read_to_string(&sentinel).unwrap(),
+                    "not quarantined by doty"
+                );
+                assert_eq!(fs::read_to_string(&plan_file).unwrap(), contents);
+            }
+        }
     }
 }
 
