@@ -131,6 +131,9 @@ impl Config {
     }
     /// Admit an existing allocation for a preservation assertion, not a release.
     pub(crate) fn preservation_allocation(&self, path: &Path, worktree: &Path) -> Result<Value> {
+        if path.canonicalize()?.starts_with(worktree) {
+            anyhow::bail!("Chaosbox preservation allocation must be outside the removed worktree");
+        }
         if self.work.canonicalize()?.starts_with(worktree) {
             anyhow::bail!("Chaosbox custody must be outside the removed worktree");
         }

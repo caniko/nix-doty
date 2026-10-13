@@ -733,22 +733,7 @@ fn print_rm_plan_preview(
 }
 
 fn print_followup(context: &crate::scope::ExecutionContext, command: &[&str]) -> Result<()> {
-    let args = std::iter::once("doty".to_owned())
-        .chain(context.followup_args()?)
-        .chain(command.iter().map(|arg| (*arg).to_owned()))
-        .map(|arg| {
-            if !arg.is_empty()
-                && arg
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b"_./-".contains(&b))
-            {
-                arg
-            } else {
-                format!("'{}'", arg.replace('\'', "'\\''"))
-            }
-        })
-        .collect::<Vec<_>>();
-    println!("Review, then run: {}", args.join(" "));
+    println!("Review, then run: {}", context.followup_command(command)?);
     Ok(())
 }
 

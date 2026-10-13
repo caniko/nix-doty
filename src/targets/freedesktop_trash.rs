@@ -1,9 +1,18 @@
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use serde_json::Value;
 
 fn configured_dirs(settings: &Value) -> Result<Vec<String>> {
+    if !settings.is_null() {
+        let object = settings
+            .as_object()
+            .context("trash settings must be an object")?;
+        ensure!(
+            object.keys().all(|key| key == "paths"),
+            "unknown trash setting"
+        );
+    }
     if let Some(paths) = settings.get("paths") {
         return paths
             .as_array()
@@ -205,6 +214,30 @@ fn fmt_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn malformed_settings_never_fall_back_to_discovered_trash() {
+        for value in [
+            serde_json::json!({"path":["/intended/trash"]}),
+            serde_json::json!({"paths":[], "path":["/intended/trash"]}),
+            serde_json::json!([]),
+            serde_json::json!("/intended/trash"),
+            serde_json::json!(false),
+        ] {
+            assert!(configured_dirs(&value).is_err(), "{value}");
+            assert!(TrashEmpty.inspect_with_settings(&value).is_err(), "{value}");
+            assert!(
+                TrashEmpty.apply_with_settings(true, true, &value).is_err(),
+                "{value}"
+            );
+        }
+        // An explicit empty path list must stay empty instead of discovering defaults.
+        assert!(
+            configured_dirs(&serde_json::json!({"paths":[]}))
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     // doty runs on Linux only; symlinks are part of the fixture.
     #[cfg(unix)]

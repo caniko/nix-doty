@@ -532,6 +532,71 @@ fn logical_candidate_bytes_are_not_a_reclaim_estimate() {
 }
 
 #[test]
+fn retention_restore_command_round_trips_external_user_roots() {
+    use crate::scope::{ExecutionContext, Mode};
+    let Some(base) = std::env::var_os("DOTY_RESTORE_COMMAND_FIXTURE") else {
+        let fixture = tempfile::tempdir().unwrap();
+        fs::create_dir(fixture.path().join("home")).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "targets::retention::tests::retention_restore_command_round_trips_external_user_roots", "--nocapture"])
+            .env("DOTY_RESTORE_COMMAND_FIXTURE", fixture.path())
+            .env("HOME", fixture.path().join("home"))
+            .env("DOTY_STATE_DIR", fixture.path().join("home/state"))
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_CACHE_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("CHAOSBOX_SCRATCH_ROOT")
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    let root = PathBuf::from(base).join("external root's $(touch injected)");
+    fs::create_dir(&root).unwrap();
+    let target = root.join("preserve");
+    fs::write(&target, "recoverable bytes").unwrap();
+    let context = ExecutionContext::current(Mode::User, std::slice::from_ref(&root)).unwrap();
+    let plan = crate::rm::plan_removal(&root, std::slice::from_ref(&target)).unwrap();
+    crate::rm::apply_plan_scoped(&plan.id, &context).unwrap();
+    assert!(!target.exists());
+    let command = context.followup_command(&["restore", &plan.id]).unwrap();
+    let decoded = std::process::Command::new("sh")
+        .args([
+            "-c",
+            &format!("doty() {{ printf '%s\\0' \"$@\"; }}; {command}"),
+        ])
+        .current_dir(root.parent().unwrap())
+        .output()
+        .unwrap();
+    assert!(decoded.status.success());
+    let args: Vec<_> = decoded
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| std::str::from_utf8(s).unwrap())
+        .collect();
+    assert_eq!(&args[..2], &["--mode", "user"]);
+    assert_eq!(
+        &args[2..],
+        &["--user-root", root.to_str().unwrap(), "restore", &plan.id]
+    );
+    let roots: Vec<_> = args
+        .windows(2)
+        .filter(|p| p[0] == "--user-root")
+        .map(|p| PathBuf::from(p[1]))
+        .collect();
+    let recovered_context = ExecutionContext::current(Mode::User, &roots).unwrap();
+    crate::rm::restore_scoped(&plan.id, &recovered_context).unwrap();
+    assert_eq!(fs::read_to_string(target).unwrap(), "recoverable bytes");
+    assert!(!root.parent().unwrap().join("injected").exists());
+}
+
+#[test]
 fn retention_apply_round_trip_in_isolated_process() {
     // rm tests also use DOTY_STATE_DIR. Isolate this test in a subprocess
     // rather than mutating the test runner's global environment.

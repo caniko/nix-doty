@@ -922,10 +922,9 @@ impl RetentionVariant {
         }
         for plan in plans {
             eprintln!(
-                "Retention plan {}: restore with `doty --mode {} restore {}`; quarantine alone frees no disk space",
+                "Retention plan {}: restore with `{}`; quarantine alone frees no disk space",
                 plan.id,
-                context.mode.as_str(),
-                plan.id
+                context.followup_command(&["restore", &plan.id])?
             );
             let applied = crate::rm::apply_plan_scoped(&plan.id, context)?;
             if self.kind != Kind::Retirement {
@@ -961,8 +960,8 @@ impl RetentionVariant {
                 crate::rm::purge_apply_scoped(&plan.id, context)?;
             } else {
                 eprintln!(
-                    "Review this retirement, then reclaim with `doty purge --plan {} --apply`",
-                    plan.id
+                    "Review this retirement, then reclaim with `{}`",
+                    context.followup_command(&["purge", &plan.id, "--apply"])?
                 );
             }
             report.removed += applied.targets.len() as u64;

@@ -1,5 +1,7 @@
 //! Real filesystem scope checks; subprocess tools are disposable fakes.
 use serde_json::{Value, json};
+#[path = "../src/followup.rs"]
+mod followup;
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -319,6 +321,59 @@ fn skipped_confirm_target_does_not_block_safe_cleanup() {
 }
 
 #[test]
+fn system_trash_settings_refuse_typos_and_honor_explicit_paths() {
+    let f = Fixture::new();
+    let trash = f.home.path().join("selected-trash");
+    fs::create_dir_all(trash.join("files")).unwrap();
+    let file = trash.join("files/discard");
+    fs::write(&file, "selected bytes").unwrap();
+    let config = f.home.path().join(".config/doty/targets.json");
+    for settings in [
+        json!({"path":[trash]}),
+        json!({"paths":[trash], "unknown":true}),
+    ] {
+        f.config(
+            "system",
+            json!([{"name":"freedesktop-trash","variant":"empty","settings":settings}]),
+        );
+        let output = f.run(&[
+            "--mode",
+            "system",
+            "run",
+            "--config",
+            config.to_str().unwrap(),
+            "--apply",
+            "--force",
+            "--json",
+        ]);
+        assert!(!output.status.success());
+        let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(
+            report["reports"][0]["errors"][0]
+                .as_str()
+                .unwrap()
+                .contains("unknown trash setting")
+        );
+        assert_eq!(fs::read_to_string(&file).unwrap(), "selected bytes");
+    }
+    f.config(
+        "system",
+        json!([{"name":"freedesktop-trash","variant":"empty","settings":{"paths":[trash]}}]),
+    );
+    success(f.run(&[
+        "--mode",
+        "system",
+        "run",
+        "--config",
+        config.to_str().unwrap(),
+        "--apply",
+        "--force",
+        "--json",
+    ]));
+    assert!(!file.exists());
+}
+
+#[test]
 fn user_trash_rejects_symlinked_structural_directories() {
     for name in ["files", "info"] {
         let f = Fixture::new();
@@ -529,6 +584,70 @@ fn user_removal_restore_and_purge_round_trip_stays_in_owned_scratch() {
     ]));
     success(f.run(&["purge", output["id"].as_str().unwrap(), "--apply", "--json"]));
     assert!(!root.join("discard").exists());
+}
+
+#[test]
+fn recovery_command_renderer_executes_restore_and_purge_through_the_cli() {
+    let shell = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|path| path.join("sh"))
+        .find(|path| path.is_file())
+        .unwrap();
+    for mode in ["user", "system"] {
+        let f = Fixture::new();
+        let external = tempfile::tempdir().unwrap();
+        let root = external.path().join("external root's $(touch injected)");
+        fs::create_dir(&root).unwrap();
+        let file = root.join("preserve");
+        let mut scope = vec!["--mode".to_owned(), mode.to_owned()];
+        if mode == "user" {
+            scope.extend(["--user-root".to_owned(), root.to_str().unwrap().to_owned()]);
+        }
+        for action in ["restore", "purge"] {
+            fs::write(&file, "recoverable bytes").unwrap();
+            let mut invocation: Vec<_> = scope.iter().map(String::as_str).collect();
+            invocation.extend([
+                "rm",
+                "--root",
+                root.to_str().unwrap(),
+                "--apply",
+                "--json",
+                "--",
+                file.to_str().unwrap(),
+            ]);
+            let plan = success(f.run(&invocation));
+            assert!(!file.exists());
+            let mut args = scope.clone();
+            args.extend([action.to_owned(), plan["id"].as_str().unwrap().to_owned()]);
+            if action == "purge" {
+                args.push("--apply".to_owned());
+            }
+            let command = followup::command(args);
+            let output = f
+                .command(&shell)
+                .env("DOTY_FIXTURE_BINARY", env!("CARGO_BIN_EXE_doty"))
+                .current_dir(external.path())
+                .args([
+                    "-c",
+                    &format!(
+                        "exec \"$DOTY_FIXTURE_BINARY\" {}",
+                        command.strip_prefix("doty ").unwrap()
+                    ),
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{command}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            if action == "restore" {
+                assert_eq!(fs::read_to_string(&file).unwrap(), "recoverable bytes");
+            } else {
+                assert!(!file.exists());
+            }
+            assert!(!external.path().join("injected").exists());
+        }
+    }
 }
 
 #[test]

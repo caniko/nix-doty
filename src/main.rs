@@ -3,6 +3,7 @@ mod cli;
 mod commands;
 mod config;
 mod exec;
+mod followup;
 pub mod framework;
 pub mod guard;
 mod model_lock;

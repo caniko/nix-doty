@@ -124,6 +124,14 @@ impl ExecutionContext {
         Ok(args)
     }
 
+    pub(crate) fn followup_command(&self, command: &[&str]) -> Result<String> {
+        Ok(crate::followup::command(
+            self.followup_args()?
+                .into_iter()
+                .chain(command.iter().map(|arg| (*arg).to_owned())),
+        ))
+    }
+
     pub fn config_path(&self, explicit: Option<String>) -> Result<String> {
         explicit.map_or_else(
             || {

@@ -329,6 +329,56 @@ fn allocation_entry(fixture: &Fixture) -> Value {
 }
 
 #[test]
+fn preservation_allocation_inside_worktree_is_rejected_before_linking() {
+    let fixture = Fixture::new();
+    let mut args = fake_chaosbox(
+        &fixture,
+        "printf '{\"version\":1,\"generation\":2}\\n'",
+        vec![],
+    );
+    let root = fixture.worktree.join("cache");
+    let allocation = root.join("allocation");
+    fs::create_dir_all(&allocation).unwrap();
+    let parent = fixture.closeout.parent().unwrap();
+    let entry = json!({"path":allocation,"identity_matches":true,
+        "identity":{"dev":"1","ino":"2","birth_ns":"3"},"links":[]});
+    let report = json!({"version":1,"scope":"private:test","host":"testhost","root":root,
+        "complete":true,"items":[{"path":allocation,"at":null,"blocked":true,"reasons":["open"],"entries":[entry]}]});
+    fs::write(
+        parent.join("query.json"),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+    for flag in ["--chaosbox-root", "--chaosbox-allocation"] {
+        let index = args.iter().position(|a| a == flag).unwrap();
+        args[index + 1] = if flag == "--chaosbox-root" {
+            &root
+        } else {
+            &allocation
+        }
+        .display()
+        .to_string();
+    }
+    for apply in [false, true] {
+        let mut invocation: Vec<_> = args.iter().map(String::as_str).collect();
+        if apply {
+            invocation.push("--apply");
+        }
+        let output = fixture.run(&invocation);
+        assert!(!output.status.success(), "apply={apply}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("allocation must be outside"));
+        assert!(allocation.exists());
+        assert!(fixture.worktree.exists());
+        assert!(!parent.join("link-args").exists());
+        assert!(!parent.join("calls").exists());
+        assert_eq!(
+            git(&fixture.repo, &["rev-parse", "finalized"]),
+            fixture.head
+        );
+    }
+}
+
+#[test]
 fn missing_allocation_and_link_failure_stop_before_removal() {
     let fixture = Fixture::new();
     let mut args = fake_chaosbox(&fixture, "exit 1", vec![]);

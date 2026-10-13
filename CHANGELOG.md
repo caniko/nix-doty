@@ -10,6 +10,11 @@
 
 ### Fixed
 
+- Worktree preservation allocations must remain outside the removed checkout.
+- Retention recovery instructions preserve execution scope and quoted user roots;
+  retirement purge instructions use the positional plan ID accepted by the CLI.
+- Trash configuration rejects unknown keys and invalid settings before selecting
+  default directories, including in system mode.
 - Safe cleanup continues when a skipped Confirm/Risky target has inadmissible
   paths; inspected and executed targets still pass caller-scope admission.
 - Worktree removal rejects every preservation artifact inside the checkout,
