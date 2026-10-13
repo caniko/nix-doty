@@ -695,28 +695,9 @@ fn check_workers(worktree: &Path) -> Result<Vec<u32>> {
                 command.len() <= 4 * 1024 * 1024,
                 "process command exceeds inspection budget"
             );
-            let needle = text(worktree)?.as_bytes();
             ensure!(
                 pid == std::process::id()
-                    || !command
-                        .windows(needle.len())
-                        .enumerate()
-                        .any(|(i, bytes)| bytes == needle
-                            && command.get(i + needle.len()).is_none_or(|b| b
-                                .is_ascii_whitespace()
-                                || matches!(
-                                    b,
-                                    b'/' | 0
-                                        | b'\''
-                                        | b'"'
-                                        | b':'
-                                        | b','
-                                        | b';'
-                                        | b')'
-                                        | b']'
-                                        | b'}'
-                                        | b'='
-                                ))),
+                    || !crate::process_path::argv_references(&command, worktree),
                 "active worker {pid} command references the worktree"
             );
             for link in [path.join("cwd"), path.join("exe")] {
@@ -757,8 +738,8 @@ fn check_workers(worktree: &Path) -> Result<Vec<u32>> {
             for line in maps.lines() {
                 if let Some(offset) = line.find('/') {
                     ensure!(
-                        !Path::new(line[offset..].trim_end_matches(" (deleted)"))
-                            .starts_with(&maps_worktree),
+                        !crate::process_path::reference_spellings(&line[offset..])
+                            .any(|path| path.starts_with(&maps_worktree)),
                         "active worker {} maps worktree content",
                         process.file_name().to_string_lossy()
                     );
@@ -802,13 +783,10 @@ fn check_workers(_: &Path) -> Result<Vec<u32>> {
 fn check_process_link(link: &Path, worktree: &Path) -> Result<bool> {
     match fs::read_link(link) {
         Ok(target) => ensure!(
-            !Path::new(
-                target
-                    .to_str()
-                    .context("non-UTF8 process reference")?
-                    .trim_end_matches(" (deleted)")
+            !crate::process_path::reference_spellings(
+                target.to_str().context("non-UTF8 process reference")?
             )
-            .starts_with(worktree),
+            .any(|path| path.starts_with(worktree)),
             "active worker reference {}",
             link.display()
         ),

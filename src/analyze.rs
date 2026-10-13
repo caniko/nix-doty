@@ -132,7 +132,9 @@ impl Agent {
     ) -> Result<()> {
         let Self::Opencode(mut options) = self;
         let path = options.path.get_or_insert_with(|| context.scratch_root());
-        context.admit_tree(path)?;
+        // This command reads only metadata. Its walker owns the recursive
+        // budget; inventory must never descend during scope admission.
+        context.admit_path(path)?;
         let mut report = scan(&options)?;
         if let Some(ledger) = ledger {
             let paths: Vec<_> = report.entries.iter().map(|e| e.path.clone()).collect();

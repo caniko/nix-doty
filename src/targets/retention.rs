@@ -711,9 +711,11 @@ fn process_paths(uid: u32) -> Result<ProcessUse> {
                 ensure!(remaining > 0, "process reference budget exhausted");
                 remaining -= 1;
                 if let Some(start) = line.find('/') {
-                    result
-                        .maps
-                        .insert(PathBuf::from(line[start..].trim_end_matches(" (deleted)")));
+                    for spelling in crate::process_path::reference_spellings(&line[start..]) {
+                        ensure!(remaining > 0, "process reference budget exhausted");
+                        remaining -= 1;
+                        result.maps.insert(spelling.to_owned());
+                    }
                 }
             }
             Ok(())

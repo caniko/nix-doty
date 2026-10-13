@@ -609,15 +609,21 @@ impl Drop for Worker {
 
 #[test]
 fn active_worker_cwd_and_external_file_descriptor_block_removal() {
-    let fixture = Fixture::new();
-    let _worker = Worker(
-        Command::new("sleep")
-            .arg("60")
-            .current_dir(&fixture.worktree)
-            .spawn()
-            .unwrap(),
-    );
-    fixture.rejects("active worker");
+    for name in [
+        "linked worktree",
+        "linked worktree (deleted)",
+        "linked worktree (deleted) (deleted)",
+    ] {
+        let fixture = Fixture::with_worktree_name(name);
+        let _worker = Worker(
+            Command::new("sleep")
+                .arg("60")
+                .current_dir(&fixture.worktree)
+                .spawn()
+                .unwrap(),
+        );
+        fixture.rejects("active worker");
+    }
 
     let fixture = Fixture::new();
     // A worker can use checkout files even with its cwd and arguments elsewhere.
@@ -633,7 +639,20 @@ fn active_worker_cwd_and_external_file_descriptor_block_removal() {
 
 #[test]
 fn active_worker_path_lists_and_structured_arguments_block_removal() {
-    for suffix in [":/other", ",mode=read", ";/other", ")", "]", "}", "=read"] {
+    for suffix in [
+        ":/other",
+        ",mode=read",
+        ";/other",
+        ")",
+        "]",
+        "}",
+        "=read",
+        "?watch=1",
+        "#revision",
+        "@remote",
+        "&watch=1",
+        "!hold",
+    ] {
         let fixture = Fixture::new();
         // The worker has no checkout fd or cwd. Its argv alone reserves it.
         let mut worker = Worker(
@@ -651,6 +670,27 @@ fn active_worker_path_lists_and_structured_arguments_block_removal() {
         assert!(worker.0.try_wait().unwrap().is_none());
         fixture.rejects("command references the worktree");
     }
+}
+
+#[test]
+fn percent_encoded_uri_arguments_block_removal() {
+    let fixture = Fixture::new();
+    let encoded = fixture
+        .worktree
+        .to_str()
+        .unwrap()
+        .replace('%', "%25")
+        .replace(' ', "%20");
+    let mut worker = Worker(
+        Command::new("sh")
+            .args(["-c", "read -r line"])
+            .arg(format!("--source=file://{encoded}?watch=1#revision"))
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap(),
+    );
+    assert!(worker.0.try_wait().unwrap().is_none());
+    fixture.rejects("command references the worktree");
 }
 
 #[test]

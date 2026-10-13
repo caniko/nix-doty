@@ -10,6 +10,12 @@
 
 ### Fixed
 
+- Worker argv protection examines complete argument fields, including URI
+  query/fragment syntax and percent-encoded paths.
+- Proc references preserve literal ` (deleted)` filename suffixes alongside
+  the kernel's deleted-object interpretation.
+- User inventory and partial metadata analysis retain their own scan budgets
+  after non-recursive root/ancestor admission.
 - Worktree closeout recognizes ignored bare Git repositories and preserves
   their independent commits before preview or removal.
 - Retention protects closed-FD mappings in cache paths containing newlines or

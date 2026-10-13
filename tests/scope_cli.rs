@@ -85,6 +85,62 @@ fn read_only_nix_store_inspection_does_not_require_caller_scope() {
 }
 
 #[test]
+fn user_analyzer_inventory_and_partial_scans_keep_their_own_bounds() {
+    let f = Fixture::new();
+    let root = f.home.path().join("scratch");
+    let mut deep = root.join("huge");
+    for _ in 0..130 {
+        deep = deep.join("d");
+    }
+    fs::create_dir_all(&deep).unwrap();
+    fs::write(deep.join("keep"), "deep sentinel").unwrap();
+    fs::write(root.join("sibling"), "sibling sentinel").unwrap();
+    let report = success(f.run(&[
+        "analyze",
+        "opencode",
+        "--path",
+        root.to_str().unwrap(),
+        "--inventory",
+        "--max-entries",
+        "2",
+        "--json",
+    ]));
+    assert_eq!(report["mode"], "inventory");
+    assert_eq!(report["complete"], true);
+    assert_eq!(report["observed_entries"], 2);
+    assert_eq!(report["entries"].as_array().unwrap().len(), 2);
+    let partial = success(f.run(&[
+        "analyze",
+        "opencode",
+        "--path",
+        root.to_str().unwrap(),
+        "--max-entries",
+        "2",
+        "--json",
+    ]));
+    assert_eq!(partial["complete"], false);
+    assert_eq!(
+        fs::read_to_string(deep.join("keep")).unwrap(),
+        "deep sentinel"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("sibling")).unwrap(),
+        "sibling sentinel"
+    );
+    let outside = tempfile::tempdir().unwrap();
+    let denied = f.run(&[
+        "analyze",
+        "opencode",
+        "--path",
+        outside.path().to_str().unwrap(),
+        "--inventory",
+        "--json",
+    ]);
+    assert!(!denied.status.success());
+    assert!(String::from_utf8_lossy(&denied.stderr).contains("outside caller roots"));
+}
+
+#[test]
 fn default_user_configuration_and_cache_paths_are_local() {
     let f = Fixture::new();
     let cache = f.home.path().join(".cache/go-build");

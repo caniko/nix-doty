@@ -427,7 +427,7 @@ fn closed_fd_mappings_preserve_caches_with_proc_pathname_characters() {
         "cache space",
     ] {
         let root = tempfile::tempdir().unwrap();
-        let file = root.path().join(name).join("old/item");
+        let file = root.path().join(name).join("old/item (deleted)");
         fs::create_dir_all(file.parent().unwrap()).unwrap();
         fs::write(&file, b"old").unwrap();
         backdate(&file);
@@ -455,6 +455,7 @@ fn closed_fd_mappings_preserve_caches_with_proc_pathname_characters() {
                 .references(&root.path().join(name)),
             "{name:?}"
         );
+        assert!(process_paths(uid).unwrap().references(&file), "{file:?}");
         let mut policy = settings(root.path(), &[name]);
         assert_eq!(select(Kind::Packages, &policy).unwrap().candidates.len(), 1);
         policy.check_processes = true;
