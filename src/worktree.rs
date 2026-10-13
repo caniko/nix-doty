@@ -609,8 +609,11 @@ fn check_tree(worktree: &Path) -> Result<()> {
     let mut pending = vec![worktree.to_owned()];
     while let Some(dir) = pending.pop() {
         if dir != worktree {
+            let bare_repository = marker_present(&dir.join("HEAD"))?
+                && marker_present(&dir.join("objects"))?
+                && marker_present(&dir.join("refs"))?;
             ensure!(
-                !marker_present(&dir.join(".git"))?,
+                !marker_present(&dir.join(".git"))? && !bare_repository,
                 "nested Git repository in worktree: {}",
                 dir.display()
             );

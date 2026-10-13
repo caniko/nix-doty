@@ -10,6 +10,8 @@
 
 ### Fixed
 
+- Worktree closeout recognizes ignored bare Git repositories and preserves
+  their independent commits before preview or removal.
 - Retention protects closed-FD mappings in cache paths containing newlines or
   literal backslash escapes by matching Linux proc pathname spelling.
 - Refuse unknown UV settings and relative or dot-component trash paths before

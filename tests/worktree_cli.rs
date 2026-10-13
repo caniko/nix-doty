@@ -316,6 +316,42 @@ fn ignored_nested_repositories_are_preserved() {
 }
 
 #[test]
+fn ignored_nested_bare_repositories_are_preserved() {
+    let fixture = Fixture::new();
+    let nested = fixture.worktree.join("cache/bare.git");
+    fs::create_dir_all(&nested).unwrap();
+    git(&nested, &["init", "--bare", "--initial-branch=main"]);
+    git(&nested, &["read-tree", "--empty"]);
+    let tree = git(&nested, &["write-tree"]);
+    let head = git(
+        &nested,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit-tree",
+            &tree,
+            "-m",
+            "independent bare history",
+        ],
+    );
+    git(&nested, &["update-ref", "refs/heads/main", &head]);
+    assert!(!nested.join(".git").exists());
+    assert!(git(&fixture.worktree, &["status", "--porcelain"]).is_empty());
+    for args in [vec![], vec!["--apply"]] {
+        let output = fixture.run(&args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("nested Git repository"));
+        assert_eq!(git(&nested, &["rev-parse", "HEAD"]), head);
+        assert_eq!(git(&nested, &["cat-file", "-t", &head]), "commit");
+        assert!(fixture.worktree.exists());
+    }
+}
+
+#[test]
 fn ignored_nested_gitfiles_and_dangling_git_markers_are_preserved() {
     for symlink in [false, true] {
         let fixture = Fixture::new();
