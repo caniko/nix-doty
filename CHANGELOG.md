@@ -2,7 +2,53 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Doty defaults to caller-local user policy under `$XDG_CONFIG_HOME/doty`.
+  Existing machine-wide invocations must select `--mode system`. Unmarked legacy
+  target documents remain system policy. See `docs/execution-modes.md`.
+
 ### Fixed
+
+- Worker argv protection examines complete argument fields, including URI
+  query/fragment syntax and percent-encoded paths.
+- Proc references preserve literal ` (deleted)` filename suffixes alongside
+  the kernel's deleted-object interpretation.
+- User inventory and partial metadata analysis retain their own scan budgets
+  after non-recursive root/ancestor admission.
+- Worktree closeout recognizes ignored bare Git repositories and preserves
+  their independent commits before preview or removal.
+- Retention protects closed-FD mappings in cache paths containing newlines or
+  literal backslash escapes by matching Linux proc pathname spelling.
+- Refuse unknown UV settings and relative or dot-component trash paths before
+  selecting or modifying cache directories in system mode.
+- Preserve ignored nested Git repositories during worktree removal.
+- Read-only Nix provenance inspection works without caller HOME admission.
+- User timers use systemd-native argument and environment escaping for literal
+  spaces, quotes, dollars and percent signs in configured paths.
+- Worktree preservation allocations must remain outside the removed checkout.
+- Retention recovery instructions preserve execution scope and quoted user roots;
+  retirement purge instructions use the positional plan ID accepted by the CLI.
+- Trash configuration rejects unknown keys and invalid settings before selecting
+  default directories, including in system mode.
+- Safe cleanup continues when a skipped Confirm/Risky target has inadmissible
+  paths; inspected and executed targets still pass caller-scope admission.
+- Worktree removal rejects every preservation artifact inside the checkout,
+  including inventories rooted in an ancestor directory, and active Git bisects.
+- Reclaim preserves structured provider paths instead of splitting configurable
+  pathnames on commas when assigning filesystem surfaces.
+- Worktree removal protects closed-descriptor memory mappings with newline and
+  mixed literal-escape pathnames in Linux process maps.
+- Removal follow-up commands preserve mode and explicit user roots with shell
+  quoting; JSON previews contain no trailing human instructions.
+- Worktree removal recognizes live-worker path references in path lists and
+  structured command arguments, including colon and comma delimiters.
+- Recorded removal plans validate their root, plan ID, quarantine directory,
+  and deterministic payload paths before preview, recovery, restore, or purge.
+- User trash cleanup refuses symlinked `files` and `info` directories before
+  inspection or execution while preserving safe unlinking of trashed links.
+- `--force` cannot mutate ReportOnly targets. UV inspection and cleanup bind
+  the same cache directory; size scans do not traverse symlinked directories.
 
 - Reclaim checks the exact requested available-byte goal independently of the
   usage threshold, stops completed plans early, and exits unsuccessfully for
@@ -18,6 +64,15 @@
   pin these tools in the installed runtime wrapper.
 
 ### Added
+
+- Shared user/system execution context with caller-owned root admission, scoped
+  retention/trash/UV providers, and guarded standalone removal commands.
+- Home Manager module with shared target rendering and an optional user timer;
+  the NixOS timer explicitly selects system mode.
+
+- Closeout-based `doty worktree remove` preview/apply with verified external
+  artifacts, retained branches, worker/protection checks, and optional existing
+  Chaosbox allocation links. See `docs/worktree-removal.md`.
 
 - Goal-driven Nix reclaim: retention is applied once (three generations and
   14 days by default), preserving gcroots and direnv roots, followed by bounded

@@ -125,6 +125,85 @@ impl Options {
 }
 
 impl Config {
+    pub(crate) fn admit_scope(&self, context: &crate::scope::ExecutionContext) -> Result<()> {
+        context.admit_path(&self.root)?;
+        context.admit_path(&self.work)
+    }
+    /// Admit an existing allocation for a preservation assertion, not a release.
+    pub(crate) fn preservation_allocation(&self, path: &Path, worktree: &Path) -> Result<Value> {
+        if path.canonicalize()?.starts_with(worktree) {
+            anyhow::bail!("Chaosbox preservation allocation must be outside the removed worktree");
+        }
+        if self.work.canonicalize()?.starts_with(worktree) {
+            anyhow::bail!("Chaosbox custody must be outside the removed worktree");
+        }
+        let report = self.inspect(&[QueryPath {
+            path: path.to_owned(),
+            at: None,
+        }])?;
+        if report["complete"] != true {
+            anyhow::bail!("Chaosbox allocation query incomplete");
+        }
+        report["items"][0]["entries"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|entry| {
+                entry["path"].as_str() == path.to_str()
+                    && entry["identity_matches"] == true
+                    && entry["identity"].is_object()
+            })
+            .cloned()
+            .context("Chaosbox allocation missing or identity changed")
+    }
+
+    /// Reuse scratch link and read back the exact assertion before removing source.
+    pub(crate) fn link_preservation(
+        &self,
+        path: &Path,
+        worktree: &Path,
+        reference: &str,
+        description: &str,
+    ) -> Result<()> {
+        let before = self.preservation_allocation(path, worktree)?;
+        let linked = |entry: &Value| {
+            entry["links"].as_array().is_some_and(|links| {
+                links.iter().any(|link| {
+                    link["category"] == "preservation"
+                        && link["reference"] == reference
+                        && link["description"] == description
+                })
+            })
+        };
+        if linked(&before) {
+            return Ok(());
+        }
+        let result = self.invoke(
+            "link",
+            Vec::new(),
+            &[
+                path.to_str()
+                    .context("Chaosbox allocation must be UTF-8")?
+                    .to_owned(),
+                "--category".into(),
+                "preservation".into(),
+                "--reference".into(),
+                reference.into(),
+                "--description".into(),
+                description.into(),
+            ],
+            Duration::from_secs(5),
+        )?;
+        if result["version"] != 1 || !result["generation"].is_u64() {
+            anyhow::bail!("Chaosbox link response schema mismatch");
+        }
+        let after = self.preservation_allocation(path, worktree)?;
+        if after["identity"] != before["identity"] || !linked(&after) {
+            anyhow::bail!("Chaosbox preservation link readback mismatch");
+        }
+        Ok(())
+    }
+
     pub fn inspect(&self, paths: &[QueryPath]) -> Result<Value> {
         if paths.is_empty() {
             return Ok(

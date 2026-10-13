@@ -42,7 +42,9 @@ impl Fixture {
             std::env::var("DOTY_TEST_BIN").unwrap_or_else(|_| env!("CARGO_BIN_EXE_doty").into()),
         );
         command
-            .args(["reclaim", "--mount", "/nix", "--json", "--config"])
+            .args([
+                "--mode", "system", "reclaim", "--mount", "/nix", "--json", "--config",
+            ])
             .arg(self.dir.path().join("targets.json"))
             .args(options)
             // Never let a fixture interpreter failure fall through to real cleanup tools.

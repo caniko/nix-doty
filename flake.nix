@@ -6,7 +6,8 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     crane.url = "github:ipetkov/crane";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    harbor-rs.url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=ed89d0b13fc61dd1b2217bf4bba97f32cec27ba7";
+    harbor.url = "git+https://github.com/caniko/harbor.git?ref=feat/harbor-monorepo-components&rev=7d99eb50c52d0a941e2996b97c469b32a7657ef4";
+    treefmt-nix.follows = "harbor/treefmt-nix";
   };
 
   outputs = inputs @ {
@@ -14,7 +15,8 @@
     nixpkgs,
     flake-parts,
     rust-overlay,
-    harbor-rs,
+    harbor,
+    treefmt-nix,
     ...
   }:
     flake-parts.lib.mkFlake {inherit inputs;} {
@@ -26,18 +28,35 @@
       ];
 
       perSystem = {system, ...}: let
-        pkgs = import nixpkgs {
-          inherit system;
-          overlays = [(import rust-overlay)];
-        };
+        pkgs =
+          import (
+            if system == "x86_64-darwin"
+            then harbor.inputs.nixpkgs-darwin
+            else nixpkgs
+          ) {
+            inherit system;
+            overlays = [(import rust-overlay)];
+          };
         inherit (pkgs) lib;
 
-        toolchain = harbor-rs.lib.mkToolchain {
+        toolchain = harbor.lib.rust.mkToolchain {
           inherit pkgs;
           toolchainProfile = "nightly";
         };
         inherit (toolchain) craneLib;
-        cross = harbor-rs.lib.mkCross {
+        treefmt = treefmt-nix.lib.evalModule pkgs {
+          projectRootFile = "flake.nix";
+          imports = [
+            harbor.treefmtModules.core-nix
+            harbor.treefmtModules.core-toml
+            harbor.treefmtModules.rust-rust
+          ];
+          programs.rustfmt = {
+            package = toolchain.rustToolchain;
+            edition = "2024";
+          };
+        };
+        cross = harbor.lib.rust.mkCross {
           inherit pkgs system;
           enableOsxcross = false;
         };
@@ -45,7 +64,7 @@
         commonArgs = {
           src = craneLib.cleanCargoSource ./.;
           strictDeps = true;
-          nativeBuildInputs = [pkgs.gitMinimal] ++ lib.optionals pkgs.stdenv.isLinux [pkgs.util-linux];
+          nativeBuildInputs = [pkgs.gitMinimal pkgs.coreutils] ++ lib.optionals pkgs.stdenv.isLinux [pkgs.util-linux];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
@@ -55,7 +74,7 @@
             nativeBuildInputs = commonArgs.nativeBuildInputs ++ [pkgs.makeWrapper];
             postInstall = ''
               wrapProgram "$out/bin/doty" \
-                --prefix PATH : ${lib.makeBinPath commonArgs.nativeBuildInputs}
+                --prefix PATH : ${lib.makeBinPath (commonArgs.nativeBuildInputs ++ [pkgs.uv])}
             '';
             meta = {
               mainProgram = "doty";
@@ -65,7 +84,7 @@
             };
           });
 
-        crossPackageSet = harbor-rs.lib.mkCrossPackages {
+        crossPackageSet = harbor.lib.rust.mkCrossPackages {
           inherit pkgs cross commonArgs craneLib;
           pname = "doty";
           targets = ["native" "aarch64-linux"];
@@ -78,6 +97,7 @@
         };
 
         checks = {
+          formatting = treefmt.config.build.check self;
           clippy = craneLib.cargoClippy (commonArgs
             // {
               inherit cargoArtifacts;
@@ -86,8 +106,9 @@
         };
 
         devShells.default = craneLib.devShell {
-          packages = with pkgs; [nh];
+          packages = [pkgs.nh treefmt.config.build.wrapper];
         };
+        formatter = treefmt.config.build.wrapper;
       };
 
       flake = {
@@ -99,6 +120,16 @@
         lib.scratchAssessmentVersion = 1;
         lib.nixOperationVersion = 1;
         lib.goalDrivenReclaimVersion = 1;
+        lib.executionScopeVersion = 1;
+        homeManagerModules.default = {
+          pkgs,
+          lib,
+          ...
+        }: {
+          imports = [./module/home.nix];
+          programs.doty.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        };
+        homeModules.default = self.homeManagerModules.default;
         crossPackages."x86_64-linux"."aarch64-linux".doty = self.packages."x86_64-linux"."doty-aarch64-linux";
         nixosModules.default = {pkgs, ...}: {
           imports = [./module/default.nix];

@@ -52,6 +52,27 @@ mod tests {
     use super::*;
     #[test]
     fn serving_reader_blocks_cleanup_and_anchor_survives_release() {
+        // Another test's fork can briefly inherit a CLOEXEC lease before exec.
+        // Exercise drop/reacquisition in its own process, with the original
+        // assertions intact and no concurrent subprocess creation.
+        if std::env::var_os("DOTY_MODEL_LOCK_FIXTURE").is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "model_lock::tests::serving_reader_blocks_cleanup_and_anchor_survives_release",
+                    "--nocapture",
+                ])
+                .env("DOTY_MODEL_LOCK_FIXTURE", "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("model.doty-lock");
         let writer = exclusive(&path).unwrap();

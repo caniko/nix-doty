@@ -1,6 +1,41 @@
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
+use serde_json::Value;
+
+fn configured_dirs(settings: &Value) -> Result<Vec<String>> {
+    if !settings.is_null() {
+        let object = settings
+            .as_object()
+            .context("trash settings must be an object")?;
+        ensure!(
+            object.keys().all(|key| key == "paths"),
+            "unknown trash setting"
+        );
+    }
+    if let Some(paths) = settings.get("paths") {
+        return paths
+            .as_array()
+            .context("trash paths must be an array")?
+            .iter()
+            .map(|p| {
+                let path = p.as_str().context("trash path must be a string")?;
+                ensure!(
+                    std::path::Path::new(path).is_absolute(),
+                    "trash path must be absolute"
+                );
+                ensure!(
+                    !path
+                        .split('/')
+                        .any(|component| matches!(component, "." | "..")),
+                    "trash path must not contain dot components"
+                );
+                Ok(path.to_owned())
+            })
+            .collect();
+    }
+    Ok(trash_dirs())
+}
 
 fn trash_dirs() -> Vec<String> {
     let mut dirs = Vec::new();
@@ -94,6 +129,9 @@ fn empty_trash_dir(td: &str) -> (u64, u64) {
 
 struct TrashEmpty;
 impl Variant for TrashEmpty {
+    fn user_scope(&self) -> crate::scope::UserScope {
+        crate::scope::UserScope::Trash
+    }
     fn name(&self) -> &'static str {
         "empty"
     }
@@ -104,7 +142,10 @@ impl Variant for TrashEmpty {
         Tier::Confirm
     }
     fn inspect(&self) -> Result<Inspection> {
-        let dirs = trash_dirs();
+        self.inspect_with_settings(&Value::Null)
+    }
+    fn inspect_with_settings(&self, settings: &Value) -> Result<Inspection> {
+        let dirs = configured_dirs(settings)?;
         let (total_files, total_size) = dirs
             .iter()
             .map(|d| inspect_trash_dir(d))
@@ -112,7 +153,7 @@ impl Variant for TrashEmpty {
         Ok(Inspection {
             framework: self.framework().name(),
             variant: self.name(),
-            path: format!("{} trash dirs", dirs.len()),
+            path: dirs.join(", "),
             size_bytes: Some(total_size),
             age_oldest_days: None,
             would_remove: total_files,
@@ -123,7 +164,15 @@ impl Variant for TrashEmpty {
         })
     }
     fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
-        let dirs = trash_dirs();
+        self.apply_with_settings(apply, _force, &Value::Null)
+    }
+    fn apply_with_settings(
+        &self,
+        apply: bool,
+        _force: bool,
+        settings: &Value,
+    ) -> Result<ApplyReport> {
+        let dirs = configured_dirs(settings)?;
         if !apply {
             let (files, bytes) = dirs
                 .iter()
@@ -174,6 +223,50 @@ fn fmt_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trash_paths_are_absolute_and_do_not_depend_on_the_working_directory() {
+        for path in [
+            ".",
+            "relative",
+            "../trash",
+            "/trash/../other",
+            "/trash/./files",
+        ] {
+            let value = serde_json::json!({"paths":[path]});
+            assert!(configured_dirs(&value).is_err(), "{path}");
+            assert!(TrashEmpty.inspect_with_settings(&value).is_err());
+            assert!(TrashEmpty.apply_with_settings(true, true, &value).is_err());
+        }
+        assert_eq!(
+            configured_dirs(&serde_json::json!({"paths":["/intended/trash"]})).unwrap(),
+            vec!["/intended/trash"]
+        );
+    }
+
+    #[test]
+    fn malformed_settings_never_fall_back_to_discovered_trash() {
+        for value in [
+            serde_json::json!({"path":["/intended/trash"]}),
+            serde_json::json!({"paths":[], "path":["/intended/trash"]}),
+            serde_json::json!([]),
+            serde_json::json!("/intended/trash"),
+            serde_json::json!(false),
+        ] {
+            assert!(configured_dirs(&value).is_err(), "{value}");
+            assert!(TrashEmpty.inspect_with_settings(&value).is_err(), "{value}");
+            assert!(
+                TrashEmpty.apply_with_settings(true, true, &value).is_err(),
+                "{value}"
+            );
+        }
+        // An explicit empty path list must stay empty instead of discovering defaults.
+        assert!(
+            configured_dirs(&serde_json::json!({"paths":[]}))
+                .unwrap()
+                .is_empty()
+        );
+    }
 
     // doty runs on Linux only; symlinks are part of the fixture.
     #[cfg(unix)]

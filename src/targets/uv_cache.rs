@@ -1,8 +1,32 @@
 use crate::exec;
 use crate::framework::{ApplyReport, Framework, Inspection, Tier, Variant};
 use anyhow::Result;
+use serde_json::Value;
 
 const UV_CACHE_DIR: &str = "/data/nvme0/shared/uv/cache";
+
+fn cache_dir(settings: &Value) -> Result<&str> {
+    if !settings.is_null() {
+        let object = settings
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("UV settings must be an object"))?;
+        anyhow::ensure!(
+            object.keys().all(|key| key == "cacheDir"),
+            "unknown UV setting"
+        );
+    }
+    let path = match settings.get("cacheDir") {
+        Some(value) => value
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("cacheDir must be a string"))?,
+        None => UV_CACHE_DIR,
+    };
+    anyhow::ensure!(
+        std::path::Path::new(path).is_absolute(),
+        "cacheDir must be absolute"
+    );
+    Ok(path)
+}
 
 struct UvCacheFramework;
 
@@ -24,6 +48,9 @@ pub static UV_CACHE: &dyn Framework = &FRAMEWORK;
 
 struct UvCacheClean;
 impl Variant for UvCacheClean {
+    fn user_scope(&self) -> crate::scope::UserScope {
+        crate::scope::UserScope::UvCache
+    }
     fn name(&self) -> &'static str {
         "clean"
     }
@@ -33,16 +60,25 @@ impl Variant for UvCacheClean {
     fn tier(&self) -> Tier {
         Tier::Safe
     }
+    fn scan_paths(&self, settings: &Value) -> Vec<String> {
+        cache_dir(settings)
+            .map(|path| vec![path.to_owned()])
+            .unwrap_or_default()
+    }
     fn inspect(&self) -> Result<Inspection> {
-        let size = if exec::path_exists(UV_CACHE_DIR) {
-            exec::total_dir_size(UV_CACHE_DIR).ok()
+        self.inspect_with_settings(&Value::Null)
+    }
+    fn inspect_with_settings(&self, settings: &Value) -> Result<Inspection> {
+        let cache = cache_dir(settings)?;
+        let size = if exec::path_exists(cache) {
+            exec::total_dir_size(cache).ok()
         } else {
             None
         };
         Ok(Inspection {
             framework: self.framework().name(),
             variant: self.name(),
-            path: UV_CACHE_DIR.into(),
+            path: cache.into(),
             size_bytes: size,
             age_oldest_days: None,
             would_remove: 1,
@@ -50,8 +86,17 @@ impl Variant for UvCacheClean {
         })
     }
     fn apply(&self, apply: bool, _force: bool) -> Result<ApplyReport> {
+        self.apply_with_settings(apply, _force, &Value::Null)
+    }
+    fn apply_with_settings(
+        &self,
+        apply: bool,
+        _force: bool,
+        settings: &Value,
+    ) -> Result<ApplyReport> {
+        let cache = cache_dir(settings)?;
         if !apply {
-            let size = exec::total_dir_size(UV_CACHE_DIR).unwrap_or(0);
+            let size = exec::total_dir_size(cache).unwrap_or(0);
             return Ok(ApplyReport {
                 framework: self.framework().name(),
                 variant: self.name(),
@@ -64,13 +109,14 @@ impl Variant for UvCacheClean {
                 )],
             });
         }
-        if exec::path_exists(UV_CACHE_DIR) {
-            exec::run_stdout(&["uv", "cache", "clean"])?;
+        let exists = exec::path_exists(cache);
+        if exists {
+            exec::run_stdout(&["uv", "cache", "clean", "--cache-dir", cache])?;
         }
         Ok(ApplyReport {
             framework: self.framework().name(),
             variant: self.name(),
-            removed: 1,
+            removed: u64::from(exists),
             freed_bytes: 0,
             skipped: 0,
             errors: vec![],
@@ -136,5 +182,31 @@ impl Variant for UvCachePruneOlder {
             skipped: 0,
             errors: vec![],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_uv_settings_cannot_select_the_shared_default() {
+        for value in [
+            serde_json::json!({"cache-dir":"/intended/cache"}),
+            serde_json::json!({"cacheDirs":"/intended/cache"}),
+            serde_json::json!({"cacheDir":"/intended/cache", "unknown":true}),
+            serde_json::json!([]),
+            serde_json::json!(false),
+        ] {
+            assert!(cache_dir(&value).is_err(), "{value}");
+            assert!(UvCacheClean.inspect_with_settings(&value).is_err());
+            assert!(
+                UvCacheClean
+                    .apply_with_settings(true, true, &value)
+                    .is_err()
+            );
+        }
+        assert_eq!(cache_dir(&Value::Null).unwrap(), UV_CACHE_DIR);
+        assert_eq!(cache_dir(&serde_json::json!({})).unwrap(), UV_CACHE_DIR);
     }
 }

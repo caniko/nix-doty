@@ -97,8 +97,8 @@ impl std::fmt::Display for SortMode {
 #[derive(Args)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Options {
-    #[arg(long, default_value = "/data/scratch/tmp/opencode")]
-    path: PathBuf,
+    #[arg(long)]
+    path: Option<PathBuf>,
     #[arg(long)]
     json: bool,
     /// Show only complete entries whose newest observed modification is this old
@@ -125,8 +125,16 @@ pub struct Options {
 }
 
 impl Agent {
-    pub fn run(self, ledger: Option<&crate::scratch_ledger::Config>) -> Result<()> {
-        let Self::Opencode(options) = self;
+    pub fn run(
+        self,
+        ledger: Option<&crate::scratch_ledger::Config>,
+        context: &crate::scope::ExecutionContext,
+    ) -> Result<()> {
+        let Self::Opencode(mut options) = self;
+        let path = options.path.get_or_insert_with(|| context.scratch_root());
+        // This command reads only metadata. Its walker owns the recursive
+        // budget; inventory must never descend during scope admission.
+        context.admit_path(path)?;
         let mut report = scan(&options)?;
         if let Some(ledger) = ledger {
             let paths: Vec<_> = report.entries.iter().map(|e| e.path.clone()).collect();
@@ -656,12 +664,12 @@ fn scan(options: &Options) -> Result<Report> {
     // Resolve every supplied component through held directory handles so a
     // symlink anywhere in --path (including a trailing slash) is rejected
     // instead of followed.
-    let mut root = open_dir(Path::new(if options.path.is_absolute() {
-        "/"
-    } else {
-        "."
-    }))?;
-    for component in options.path.components() {
+    let path = options
+        .path
+        .as_ref()
+        .context("scratch path must be resolved before scanning")?;
+    let mut root = open_dir(Path::new(if path.is_absolute() { "/" } else { "." }))?;
+    for component in path.components() {
         if matches!(
             component,
             std::path::Component::RootDir | std::path::Component::CurDir
@@ -673,7 +681,7 @@ fn scan(options: &Options) -> Result<Report> {
         root = open_dir(&access).with_context(|| {
             format!(
                 "cannot open directory {:?} (must be a directory; symlink components are rejected)",
-                options.path
+                path
             )
         })?;
     }
@@ -686,7 +694,7 @@ fn scan(options: &Options) -> Result<Report> {
         } else {
             "subtree".into()
         },
-        root: options.path.clone(),
+        root: path.clone(),
         scanned_at: chrono::Utc::now().to_rfc3339(),
         max_entries: options.max_entries,
         max_depth: options.max_depth,
@@ -754,12 +762,12 @@ fn scan(options: &Options) -> Result<Report> {
     let mut all: Vec<Entry> = Vec::with_capacity(names.len());
     let mut blockers: Vec<ReviewItem> = Vec::new();
     for name in &names {
-        let path = options.path.join(name);
-        let Some(path_str) = path.to_str() else {
+        let child_path = path.join(name);
+        let Some(path_str) = child_path.to_str() else {
             report.complete = false;
             log.record(
                 "non-UTF-8 path",
-                format!("Skipped non-UTF-8 top-level path: {path:?}"),
+                format!("Skipped non-UTF-8 top-level path: {child_path:?}"),
             );
             report.skipped_entries += 1;
             report.non_utf8_skipped += 1;
@@ -767,7 +775,7 @@ fn scan(options: &Options) -> Result<Report> {
             // the raw name, so the identity survives even when the bounded
             // issue sample is truncated or disabled.
             blockers.push(ReviewItem {
-                path: options.path.clone(),
+                path: path.clone(),
                 reason: format!(
                     "non-UTF-8 top-level name {name:?}; excluded from entries, resolve with byte-level tooling"
                 ),
@@ -775,7 +783,7 @@ fn scan(options: &Options) -> Result<Report> {
             continue;
         };
         let _ = path_str;
-        let mut item = Entry::stub(path);
+        let mut item = Entry::stub(child_path);
         // Re-resolve the child through the held root handle instead of trusting
         // the joined display path, closing a rename race between listing and
         // visiting.
@@ -894,7 +902,7 @@ mod tests {
     #[test]
     fn non_linux_refuses_scan_rather_than_weakening_it() {
         let options = Options {
-            path: PathBuf::from("/tmp"),
+            path: Some(PathBuf::from("/tmp")),
             json: true,
             older_than_days: None,
             limit: 50,
@@ -921,7 +929,7 @@ mod tests {
 
         fn options(path: PathBuf) -> Options {
             Options {
-                path,
+                path: Some(path),
                 json: true,
                 older_than_days: None,
                 limit: 50,

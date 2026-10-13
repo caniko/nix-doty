@@ -23,6 +23,7 @@ struct VariantEntry {
 
 #[derive(Serialize)]
 struct StatusOutput {
+    mode: crate::scope::Mode,
     target: Option<String>,
     variant: Option<String>,
     inspections: Vec<Inspection>,
@@ -30,6 +31,7 @@ struct StatusOutput {
 
 #[derive(Serialize)]
 struct RunOutput {
+    mode: crate::scope::Mode,
     target: Option<String>,
     variant: Option<String>,
     reports: Vec<ApplyReport>,
@@ -74,7 +76,7 @@ fn ledger_settings(
     Ok(settings)
 }
 
-pub fn list(json: bool) -> Result<()> {
+pub fn list(json: bool, context: &crate::scope::ExecutionContext) -> Result<()> {
     let entries: Vec<ListEntry> = registry::ALL_FRAMEWORKS
         .iter()
         .map(|f| ListEntry {
@@ -83,6 +85,10 @@ pub fn list(json: bool) -> Result<()> {
             variants: f
                 .variants()
                 .iter()
+                .filter(|v| {
+                    context.mode == crate::scope::Mode::System
+                        || v.user_scope() != crate::scope::UserScope::SystemOnly
+                })
                 .map(|v| VariantEntry {
                     name: v.name(),
                     tier: match v.tier() {
@@ -94,6 +100,7 @@ pub fn list(json: bool) -> Result<()> {
                 })
                 .collect(),
         })
+        .filter(|f| !f.variants.is_empty())
         .collect();
 
     if json {
@@ -120,13 +127,14 @@ pub fn status(
     config_path: &str,
     json: bool,
     ledger: Option<&crate::scratch_ledger::Config>,
+    context: &crate::scope::ExecutionContext,
 ) -> Result<()> {
-    let frameworks = select_variants(target.as_deref(), variant.as_deref(), config_path)?;
+    let frameworks = select_variants(target.as_deref(), variant.as_deref(), config_path, context)?;
 
     let mut inspections = Vec::new();
     for selected in &frameworks {
         let v = selected.variant;
-        let settings = ledger_settings(selected, ledger)?;
+        let settings = context.settings(v.user_scope(), &ledger_settings(selected, ledger)?)?;
         match v.inspect_with_settings(&settings) {
             Ok(i) => inspections.push(i),
             Err(e) => {
@@ -153,6 +161,7 @@ pub fn status(
         println!(
             "{}",
             serde_json::to_string_pretty(&StatusOutput {
+                mode: context.mode,
                 target,
                 variant,
                 inspections
@@ -204,19 +213,19 @@ pub fn run(
     target: Option<String>,
     variant: Option<String>,
     config_path: &str,
-    apply: bool,
-    force: bool,
-    json: bool,
+    options: RunOptions,
     ledger: Option<&crate::scratch_ledger::Config>,
+    context: &crate::scope::ExecutionContext,
 ) -> Result<()> {
-    let variants = select_variants(target.as_deref(), variant.as_deref(), config_path)?;
+    let RunOptions { apply, force, json } = options;
+    let variants = select_variants(target.as_deref(), variant.as_deref(), config_path, context)?;
 
     let mut reports = Vec::new();
     let mut command_failed = false;
     for selected in &variants {
         let v = selected.variant;
         let tier = v.tier();
-        if !force {
+        if !force || tier == Tier::ReportOnly {
             match tier {
                 Tier::Risky if apply => {
                     reports.push(skipped_report(v, "skipped: risky, requires --force"));
@@ -233,8 +242,8 @@ pub fn run(
                 _ => {}
             }
         }
-        let settings = ledger_settings(selected, ledger)?;
-        match v.apply_with_settings(apply, force, &settings) {
+        let settings = context.settings(v.user_scope(), &ledger_settings(selected, ledger)?)?;
+        match v.apply_scoped(apply, force, &settings, context) {
             Ok(r) => {
                 command_failed |= apply && !r.errors.is_empty();
                 if !json {
@@ -293,6 +302,7 @@ pub fn run(
         println!(
             "{}",
             serde_json::to_string_pretty(&RunOutput {
+                mode: context.mode,
                 target,
                 variant,
                 reports,
@@ -306,6 +316,12 @@ pub fn run(
         "one or more configured cleanup commands failed"
     );
     Ok(())
+}
+
+pub struct RunOptions {
+    pub apply: bool,
+    pub force: bool,
+    pub json: bool,
 }
 
 fn prefix(apply: bool) -> &'static str {
@@ -366,14 +382,29 @@ fn skipped_report(v: &dyn crate::framework::Variant, reason: &str) -> ApplyRepor
     }
 }
 
-pub fn doctor(config_path: &str, expected_path: Option<&str>, json: bool) -> Result<()> {
+pub fn doctor(
+    config_path: &str,
+    expected_path: Option<&str>,
+    json: bool,
+    context: &crate::scope::ExecutionContext,
+) -> Result<()> {
     let document = config::load_document(config_path)?;
+    context.admit_document(&document)?;
+    let mut resolved_targets = document.targets.clone();
+    for t in &mut resolved_targets {
+        if let Some(v) = registry::find_variant(&t.name, &t.variant) {
+            t.settings = context.settings(v.user_scope(), &t.settings)?;
+        }
+    }
     let configured_targets = &document.targets;
     let expected = expected_path.map(config::load_document).transpose()?;
+    if let Some(expected) = &expected {
+        context.admit_document(expected)?;
+    }
     let requirements = expected
         .as_ref()
         .map_or(&document.requirements, |doc| &doc.requirements);
-    let coverage_gaps = coverage_gaps(configured_targets, requirements);
+    let coverage_gaps = coverage_gaps(&resolved_targets, requirements);
     let mut configuration_drift = Vec::new();
     if let Some(expected) = &expected {
         for target in &expected.targets {
@@ -419,7 +450,19 @@ pub fn doctor(config_path: &str, expected_path: Option<&str>, json: bool) -> Res
     let mut extra = Vec::new();
     let available: BTreeMap<&str, BTreeSet<&str>> = registry::ALL_FRAMEWORKS
         .iter()
-        .map(|f| (f.name(), f.variants().iter().map(|v| v.name()).collect()))
+        .map(|f| {
+            (
+                f.name(),
+                f.variants()
+                    .iter()
+                    .filter(|v| {
+                        context.mode == crate::scope::Mode::System
+                            || v.user_scope() != crate::scope::UserScope::SystemOnly
+                    })
+                    .map(|v| v.name())
+                    .collect(),
+            )
+        })
         .collect();
     let configured_pairs: BTreeSet<(String, String)> = configured
         .iter()
@@ -514,17 +557,20 @@ pub(crate) fn select_variants(
     target: Option<&str>,
     variant: Option<&str>,
     config_path: &str,
+    context: &crate::scope::ExecutionContext,
 ) -> Result<Vec<SelectedVariant>> {
+    let document = config::load_document(config_path)?;
+    context.admit_document(&document)?;
     match (target, variant) {
         (Some(t), Some(v)) => {
-            let configured = configured_for(Some(t), Some(v), config_path)?;
+            let configured = configured_for(Some(t), Some(v), document.targets);
             if configured.is_empty() {
                 anyhow::bail!("target {t} variant {v} is not configured in {config_path}");
             }
             configured_to_variants(configured)
         }
         (Some(t), None) => {
-            let configured = configured_for(Some(t), None, config_path)?;
+            let configured = configured_for(Some(t), None, document.targets);
             if configured.is_empty() {
                 anyhow::bail!("target {t} is not configured in {config_path}");
             }
@@ -533,21 +579,20 @@ pub(crate) fn select_variants(
         (None, Some(v)) => {
             anyhow::bail!("variant {v} requires --target so configured host policy is unambiguous")
         }
-        (None, None) => configured_to_variants(config::load_targets(config_path)?),
+        (None, None) => configured_to_variants(document.targets),
     }
 }
 
 fn configured_for(
     target: Option<&str>,
     variant: Option<&str>,
-    config_path: &str,
-) -> Result<Vec<ConfiguredTarget>> {
-    let configured = config::load_targets(config_path)?;
-    Ok(configured
+    configured: Vec<ConfiguredTarget>,
+) -> Vec<ConfiguredTarget> {
+    configured
         .into_iter()
         .filter(|t| target.is_none_or(|name| t.name == name))
         .filter(|t| variant.is_none_or(|name| t.variant == name))
-        .collect())
+        .collect()
 }
 
 fn configured_to_variants(configured: Vec<ConfiguredTarget>) -> Result<Vec<SelectedVariant>> {
@@ -559,6 +604,8 @@ fn configured_to_variants(configured: Vec<ConfiguredTarget>) -> Result<Vec<Selec
             })?;
             Ok(SelectedVariant {
                 variant,
+                // Selection must not inspect paths belonging to apply-tier skips.
+                // Callers resolve and admit settings before inspection or execution.
                 settings: t.settings,
             })
         })
@@ -612,9 +659,12 @@ pub fn rm(
     targets: &[String],
     json: bool,
     ledger: Option<crate::scratch_ledger::Config>,
+    context: &crate::scope::ExecutionContext,
 ) -> Result<()> {
     use std::path::PathBuf;
+    crate::rm::admit_state(context)?;
     if let Some(id) = plan {
+        context.admit_plan(&crate::rm::describe_plan(id)?)?;
         if ledger.is_some() && crate::rm::describe_plan(id)?.scratch_ledger.is_none() {
             anyhow::bail!(
                 "removal plan predates configured scratch intelligence; create a new ledger-backed plan"
@@ -626,10 +676,12 @@ pub fn rm(
         if !apply {
             let recorded = crate::rm::describe_plan(id)?;
             print_rm_plan(&recorded, false, json)?;
-            println!("Review, then run: doty rm --apply --plan {id}");
+            if !json {
+                print_followup(context, &["rm", "--apply", "--plan", id])?;
+            }
             return Ok(());
         }
-        let applied = crate::rm::apply_plan(id)?;
+        let applied = crate::rm::apply_plan_scoped(id, context)?;
         print_rm_plan(&applied, true, json)?;
         return Ok(());
     }
@@ -637,17 +689,25 @@ pub fn rm(
         anyhow::bail!("no removal targets given (or pass --plan <id>)");
     }
     let paths: Vec<PathBuf> = targets.iter().map(PathBuf::from).collect();
+    context.admit_path(Path::new(root))?;
+    for path in &paths {
+        context.admit_tree(path)?;
+    }
     let preview = crate::rm::plan_removal_with_ledger(Path::new(root), &paths, ledger)?;
     if !apply {
-        print_rm_plan_preview(&preview, json)?;
+        print_rm_plan_preview(&preview, json, context)?;
         return Ok(());
     }
-    let applied = crate::rm::apply_plan(&preview.id)?;
+    let applied = crate::rm::apply_plan_scoped(&preview.id, context)?;
     print_rm_plan(&applied, true, json)?;
     Ok(())
 }
 
-fn print_rm_plan_preview(preview: &crate::rm::RmPreview, json: bool) -> Result<()> {
+fn print_rm_plan_preview(
+    preview: &crate::rm::RmPreview,
+    json: bool,
+    context: &crate::scope::ExecutionContext,
+) -> Result<()> {
     if json {
         println!(
             "{}",
@@ -669,7 +729,11 @@ fn print_rm_plan_preview(preview: &crate::rm::RmPreview, json: bool) -> Result<(
     if let Some(packet) = &preview.scratch_intelligence {
         crate::scratch_ledger::print_report(packet);
     }
-    println!("Review, then run: doty rm --apply --plan {}", preview.id);
+    print_followup(context, &["rm", "--apply", "--plan", &preview.id])
+}
+
+fn print_followup(context: &crate::scope::ExecutionContext, command: &[&str]) -> Result<()> {
+    println!("Review, then run: {}", context.followup_command(command)?);
     Ok(())
 }
 
@@ -695,21 +759,31 @@ fn print_rm_plan(plan: &crate::rm::RmPlan, applied: bool, json: bool) -> Result<
 }
 
 /// Restore quarantined entries for a removal plan.
-pub fn restore(plan: &str, json: bool) -> Result<()> {
-    let restored = crate::rm::restore(plan)?;
+pub fn restore(plan: &str, json: bool, context: &crate::scope::ExecutionContext) -> Result<()> {
+    crate::rm::admit_state(context)?;
+    let restored = crate::rm::restore_scoped(plan, context)?;
     print_rm_plan(&restored, false, json)?;
     Ok(())
 }
 
 /// Preview or apply permanent purge for a quarantined removal plan.
-pub fn purge(plan: &str, apply: bool, json: bool) -> Result<()> {
+pub fn purge(
+    plan: &str,
+    apply: bool,
+    json: bool,
+    context: &crate::scope::ExecutionContext,
+) -> Result<()> {
+    crate::rm::admit_state(context)?;
+    context.admit_plan(&crate::rm::describe_plan(plan)?)?;
     if !apply {
         let preview = crate::rm::purge_preview(plan)?;
         print_rm_plan(&preview, false, json)?;
-        println!("Review, then run: doty purge --apply {plan}");
+        if !json {
+            print_followup(context, &["purge", "--apply", plan])?;
+        }
         return Ok(());
     }
-    let purged = crate::rm::purge_apply(plan)?;
+    let purged = crate::rm::purge_apply_scoped(plan, context)?;
     print_rm_plan(&purged, false, json)?;
     Ok(())
 }

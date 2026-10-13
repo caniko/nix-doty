@@ -7,8 +7,8 @@ Mount aliases and Btrfs subvolumes sharing backing storage get one free-space
 goal. Invalid mount paths fail rather than reporting successful empty plans.
 
 ```sh
-doty reclaim --mount /nix --min-free-bytes 107374182400
-doty reclaim --mount /nix --min-free-bytes 107374182400 --apply \
+doty --mode system reclaim --mount /nix --min-free-bytes 107374182400
+doty --mode system reclaim --mount /nix --min-free-bytes 107374182400 --apply \
   --timeout-seconds 1200 --gc-max-bytes 34359738368 --gc-pass-bytes 4294967296
 ```
 

@@ -411,6 +411,72 @@ fn open_files_are_active_even_when_backdated() {
 }
 
 #[test]
+fn closed_fd_mappings_preserve_caches_with_proc_pathname_characters() {
+    use std::os::fd::AsRawFd;
+    struct Mapping(*mut libc::c_void);
+    impl Drop for Mapping {
+        fn drop(&mut self) {
+            // SAFETY: this is the successful three-byte mmap owned by this guard.
+            assert_eq!(unsafe { libc::munmap(self.0, 3) }, 0);
+        }
+    }
+    for name in [
+        "cache\nnewline",
+        r"cache\040literal",
+        r"cache\012literal",
+        "cache space",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join(name).join("old/item (deleted)");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"old").unwrap();
+        backdate(&file);
+        backdate(file.parent().unwrap());
+        let fd = fs::File::open(&file).unwrap();
+        // SAFETY: map exactly the file's three bytes read-only; the RAII guard
+        // unmaps it before fixture cleanup, independently of the closed fd.
+        let pointer = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                3,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE,
+                fd.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(pointer, libc::MAP_FAILED);
+        let _mapping = Mapping(pointer);
+        drop(fd);
+        let uid = fs::metadata(root.path()).unwrap().uid();
+        assert!(
+            process_paths(uid)
+                .unwrap()
+                .references(&root.path().join(name)),
+            "{name:?}"
+        );
+        assert!(process_paths(uid).unwrap().references(&file), "{file:?}");
+        let mut policy = settings(root.path(), &[name]);
+        assert_eq!(select(Kind::Packages, &policy).unwrap().candidates.len(), 1);
+        policy.check_processes = true;
+        let selected = select(Kind::Packages, &policy).unwrap();
+        assert!(selected.candidates.is_empty(), "{name:?}");
+        assert!(
+            selected
+                .skipped
+                .iter()
+                .any(|reason| reason.contains("active process reference")),
+            "{name:?}"
+        );
+        let applied = PACKAGE_PRUNE.apply_settings(true, true, &policy).unwrap();
+        assert_eq!(applied.removed, 0, "{name:?}");
+        assert!(applied.skipped > 0, "{name:?}");
+        assert_eq!(fs::read(&file).unwrap(), b"old");
+        assert!(!root.path().join(".doty-quarantine").exists());
+    }
+}
+
+#[test]
 fn changed_descendant_invalidates_prepared_candidate() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir_all(root.path().join("cache/old")).unwrap();
@@ -529,6 +595,71 @@ fn logical_candidate_bytes_are_not_a_reclaim_estimate() {
             .size_bytes,
         Some(3)
     );
+}
+
+#[test]
+fn retention_restore_command_round_trips_external_user_roots() {
+    use crate::scope::{ExecutionContext, Mode};
+    let Some(base) = std::env::var_os("DOTY_RESTORE_COMMAND_FIXTURE") else {
+        let fixture = tempfile::tempdir().unwrap();
+        fs::create_dir(fixture.path().join("home")).unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "targets::retention::tests::retention_restore_command_round_trips_external_user_roots", "--nocapture"])
+            .env("DOTY_RESTORE_COMMAND_FIXTURE", fixture.path())
+            .env("HOME", fixture.path().join("home"))
+            .env("DOTY_STATE_DIR", fixture.path().join("home/state"))
+            .env_remove("XDG_CONFIG_HOME")
+            .env_remove("XDG_CACHE_HOME")
+            .env_remove("XDG_DATA_HOME")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("CHAOSBOX_SCRATCH_ROOT")
+            .output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    let root = PathBuf::from(base).join("external root's $(touch injected)");
+    fs::create_dir(&root).unwrap();
+    let target = root.join("preserve");
+    fs::write(&target, "recoverable bytes").unwrap();
+    let context = ExecutionContext::current(Mode::User, std::slice::from_ref(&root)).unwrap();
+    let plan = crate::rm::plan_removal(&root, std::slice::from_ref(&target)).unwrap();
+    crate::rm::apply_plan_scoped(&plan.id, &context).unwrap();
+    assert!(!target.exists());
+    let command = context.followup_command(&["restore", &plan.id]).unwrap();
+    let decoded = std::process::Command::new("sh")
+        .args([
+            "-c",
+            &format!("doty() {{ printf '%s\\0' \"$@\"; }}; {command}"),
+        ])
+        .current_dir(root.parent().unwrap())
+        .output()
+        .unwrap();
+    assert!(decoded.status.success());
+    let args: Vec<_> = decoded
+        .stdout
+        .split(|b| *b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| std::str::from_utf8(s).unwrap())
+        .collect();
+    assert_eq!(&args[..2], &["--mode", "user"]);
+    assert_eq!(
+        &args[2..],
+        &["--user-root", root.to_str().unwrap(), "restore", &plan.id]
+    );
+    let roots: Vec<_> = args
+        .windows(2)
+        .filter(|p| p[0] == "--user-root")
+        .map(|p| PathBuf::from(p[1]))
+        .collect();
+    let recovered_context = ExecutionContext::current(Mode::User, &roots).unwrap();
+    crate::rm::restore_scoped(&plan.id, &recovered_context).unwrap();
+    assert_eq!(fs::read_to_string(target).unwrap(), "recoverable bytes");
+    assert!(!root.parent().unwrap().join("injected").exists());
 }
 
 #[test]

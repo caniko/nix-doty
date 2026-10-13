@@ -3,16 +3,20 @@ mod cli;
 mod commands;
 mod config;
 mod exec;
+mod followup;
 pub mod framework;
 pub mod guard;
 mod model_lock;
 pub mod mount;
 mod nix_ledger;
+mod process_path;
 pub mod reclaim;
 pub mod registry;
 pub mod rm;
+pub mod scope;
 mod scratch_ledger;
 pub mod targets;
+mod worktree;
 
 fn main() -> anyhow::Result<()> {
     let cli = <cli::Cli as clap::Parser>::parse();

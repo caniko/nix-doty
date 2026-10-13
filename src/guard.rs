@@ -39,6 +39,20 @@ pub struct GuardedPath {
 /// markers (`.git` file or dir) on the path or ancestors. The sole repository
 /// exception is an ignored, untracked `target` directory with a Cargo cache tag.
 pub fn guard_path(path: &Path, allowed_root: &Path) -> Result<GuardedPath> {
+    guard_path_inner(path, allowed_root, false)
+}
+
+/// Only for a linked checkout independently admitted through Git registration.
+/// The exception applies to the candidate's own `.git`, never its ancestors.
+pub(crate) fn guard_registered_worktree(path: &Path) -> Result<GuardedPath> {
+    guard_path_inner(path, path.parent().context("worktree has no parent")?, true)
+}
+
+fn guard_path_inner(
+    path: &Path,
+    allowed_root: &Path,
+    linked_worktree: bool,
+) -> Result<GuardedPath> {
     let root = allowed_root
         .canonicalize()
         .with_context(|| format!("cannot resolve allowed root {}", allowed_root.display()))?;
@@ -118,7 +132,10 @@ pub fn guard_path(path: &Path, allowed_root: &Path) -> Result<GuardedPath> {
         if dir.join(PROTECT_MARKER).is_file() {
             anyhow::bail!("refusing protected path: {}", candidate.display());
         }
-        if dir.join(".git").exists() && !ignored_cargo_target(&candidate, dir)? {
+        if dir.join(".git").exists()
+            && !(linked_worktree && dir == candidate)
+            && !ignored_cargo_target(&candidate, dir)?
+        {
             anyhow::bail!("refusing git repository content: {}", candidate.display());
         }
         if dir == root {
