@@ -660,7 +660,7 @@ fn check_workers(worktree: &Path) -> Result<Vec<u32>> {
     // /proc/maps escapes newlines as \\012, but leaves literal backslashes
     // unchanged. Compare in that representation to preserve mixed names and
     // conservatively protect the kernel's ambiguous newline/literal spelling.
-    let maps_worktree = PathBuf::from(text(worktree)?.replace('\n', "\\012"));
+    let maps_worktree = crate::process_path::maps_spelling(worktree);
     let mut omissions = Vec::new();
     let mut remaining = 1_000_000usize;
     for process in fs::read_dir("/proc")? {

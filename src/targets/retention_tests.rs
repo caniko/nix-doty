@@ -411,6 +411,71 @@ fn open_files_are_active_even_when_backdated() {
 }
 
 #[test]
+fn closed_fd_mappings_preserve_caches_with_proc_pathname_characters() {
+    use std::os::fd::AsRawFd;
+    struct Mapping(*mut libc::c_void);
+    impl Drop for Mapping {
+        fn drop(&mut self) {
+            // SAFETY: this is the successful three-byte mmap owned by this guard.
+            assert_eq!(unsafe { libc::munmap(self.0, 3) }, 0);
+        }
+    }
+    for name in [
+        "cache\nnewline",
+        r"cache\040literal",
+        r"cache\012literal",
+        "cache space",
+    ] {
+        let root = tempfile::tempdir().unwrap();
+        let file = root.path().join(name).join("old/item");
+        fs::create_dir_all(file.parent().unwrap()).unwrap();
+        fs::write(&file, b"old").unwrap();
+        backdate(&file);
+        backdate(file.parent().unwrap());
+        let fd = fs::File::open(&file).unwrap();
+        // SAFETY: map exactly the file's three bytes read-only; the RAII guard
+        // unmaps it before fixture cleanup, independently of the closed fd.
+        let pointer = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                3,
+                libc::PROT_READ,
+                libc::MAP_PRIVATE,
+                fd.as_raw_fd(),
+                0,
+            )
+        };
+        assert_ne!(pointer, libc::MAP_FAILED);
+        let _mapping = Mapping(pointer);
+        drop(fd);
+        let uid = fs::metadata(root.path()).unwrap().uid();
+        assert!(
+            process_paths(uid)
+                .unwrap()
+                .references(&root.path().join(name)),
+            "{name:?}"
+        );
+        let mut policy = settings(root.path(), &[name]);
+        assert_eq!(select(Kind::Packages, &policy).unwrap().candidates.len(), 1);
+        policy.check_processes = true;
+        let selected = select(Kind::Packages, &policy).unwrap();
+        assert!(selected.candidates.is_empty(), "{name:?}");
+        assert!(
+            selected
+                .skipped
+                .iter()
+                .any(|reason| reason.contains("active process reference")),
+            "{name:?}"
+        );
+        let applied = PACKAGE_PRUNE.apply_settings(true, true, &policy).unwrap();
+        assert_eq!(applied.removed, 0, "{name:?}");
+        assert!(applied.skipped > 0, "{name:?}");
+        assert_eq!(fs::read(&file).unwrap(), b"old");
+        assert!(!root.path().join(".doty-quarantine").exists());
+    }
+}
+
+#[test]
 fn changed_descendant_invalidates_prepared_candidate() {
     let root = tempfile::tempdir().unwrap();
     fs::create_dir_all(root.path().join("cache/old")).unwrap();

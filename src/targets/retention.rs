@@ -651,16 +651,21 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
 #[derive(Default)]
 struct ProcessUse {
     paths: BTreeSet<PathBuf>,
+    maps: BTreeSet<PathBuf>,
     unknown: bool,
     issues: Vec<String>,
 }
 
 impl ProcessUse {
     fn references(&self, path: &Path) -> bool {
-        self.paths
-            .range(path.to_path_buf()..)
-            .next()
-            .is_some_and(|open| open.starts_with(path))
+        let references = |paths: &BTreeSet<PathBuf>, path: &Path| {
+            paths
+                .range(path.to_path_buf()..)
+                .next()
+                .is_some_and(|open| open.starts_with(path))
+        };
+        references(&self.paths, path)
+            || references(&self.maps, &crate::process_path::maps_spelling(path))
     }
 }
 
@@ -706,11 +711,9 @@ fn process_paths(uid: u32) -> Result<ProcessUse> {
                 ensure!(remaining > 0, "process reference budget exhausted");
                 remaining -= 1;
                 if let Some(start) = line.find('/') {
-                    result.paths.insert(PathBuf::from(
-                        line[start..]
-                            .trim_end_matches(" (deleted)")
-                            .replace("\\040", " "),
-                    ));
+                    result
+                        .maps
+                        .insert(PathBuf::from(line[start..].trim_end_matches(" (deleted)")));
                 }
             }
             Ok(())

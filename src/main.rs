@@ -9,6 +9,7 @@ pub mod guard;
 mod model_lock;
 pub mod mount;
 mod nix_ledger;
+mod process_path;
 pub mod reclaim;
 pub mod registry;
 pub mod rm;
