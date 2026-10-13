@@ -608,6 +608,13 @@ fn check_tree(worktree: &Path) -> Result<()> {
     let device = fs::metadata(worktree)?.dev();
     let mut pending = vec![worktree.to_owned()];
     while let Some(dir) = pending.pop() {
+        if dir != worktree {
+            ensure!(
+                !marker_present(&dir.join(".git"))?,
+                "nested Git repository in worktree: {}",
+                dir.display()
+            );
+        }
         ensure!(
             !marker_present(&dir.join(crate::guard::PROTECT_MARKER))?,
             "protected worktree subtree: {}",

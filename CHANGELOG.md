@@ -10,6 +10,12 @@
 
 ### Fixed
 
+- Refuse unknown UV settings and relative or dot-component trash paths before
+  selecting or modifying cache directories in system mode.
+- Preserve ignored nested Git repositories during worktree removal.
+- Read-only Nix provenance inspection works without caller HOME admission.
+- User timers use systemd-native argument and environment escaping for literal
+  spaces, quotes, dollars and percent signs in configured paths.
 - Worktree preservation allocations must remain outside the removed checkout.
 - Retention recovery instructions preserve execution scope and quoted user roots;
   retirement purge instructions use the positional plan ID accepted by the CLI.

@@ -6,6 +6,15 @@ use serde_json::Value;
 const UV_CACHE_DIR: &str = "/data/nvme0/shared/uv/cache";
 
 fn cache_dir(settings: &Value) -> Result<&str> {
+    if !settings.is_null() {
+        let object = settings
+            .as_object()
+            .ok_or_else(|| anyhow::anyhow!("UV settings must be an object"))?;
+        anyhow::ensure!(
+            object.keys().all(|key| key == "cacheDir"),
+            "unknown UV setting"
+        );
+    }
     let path = match settings.get("cacheDir") {
         Some(value) => value
             .as_str()
@@ -173,5 +182,31 @@ impl Variant for UvCachePruneOlder {
             skipped: 0,
             errors: vec![],
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_uv_settings_cannot_select_the_shared_default() {
+        for value in [
+            serde_json::json!({"cache-dir":"/intended/cache"}),
+            serde_json::json!({"cacheDirs":"/intended/cache"}),
+            serde_json::json!({"cacheDir":"/intended/cache", "unknown":true}),
+            serde_json::json!([]),
+            serde_json::json!(false),
+        ] {
+            assert!(cache_dir(&value).is_err(), "{value}");
+            assert!(UvCacheClean.inspect_with_settings(&value).is_err());
+            assert!(
+                UvCacheClean
+                    .apply_with_settings(true, true, &value)
+                    .is_err()
+            );
+        }
+        assert_eq!(cache_dir(&Value::Null).unwrap(), UV_CACHE_DIR);
+        assert_eq!(cache_dir(&serde_json::json!({})).unwrap(), UV_CACHE_DIR);
     }
 }

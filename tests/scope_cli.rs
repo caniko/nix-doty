@@ -57,6 +57,34 @@ fn success(output: Output) -> Value {
 }
 
 #[test]
+fn read_only_nix_store_inspection_does_not_require_caller_scope() {
+    let f = Fixture::new();
+    let shell = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+        .map(|p| p.join("sh"))
+        .find(|p| p.is_file())
+        .unwrap();
+    let tool = f.home.path().join("bin/chaosbox");
+    fs::write(&tool, format!("#!{}\nprintf '%s\\n' '{{\"version\":1,\"scope\":\"private:test\",\"host\":\"fixture\",\"store\":\"daemon\",\"cleanup_authorized\":false,\"complete\":true,\"items\":[]}}'\n", shell.display())).unwrap();
+    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    for home in [None, Some("/etc")] {
+        let mut command = f.command(env!("CARGO_BIN_EXE_doty"));
+        command.env_remove("HOME");
+        if let Some(home) = home {
+            command.env("HOME", home);
+        }
+        let output = command
+            .env("DOTY_NIX_CHAOSBOX_BIN", &tool)
+            .env("DOTY_NIX_SCOPE", "private:test")
+            .env("DOTY_NIX_HOST", "fixture")
+            .env("DOTY_NIX_STORE", "daemon")
+            .args(["nix-store"])
+            .output()
+            .unwrap();
+        assert_eq!(success(output)["cleanup_authorized"], false);
+    }
+}
+
+#[test]
 fn default_user_configuration_and_cache_paths_are_local() {
     let f = Fixture::new();
     let cache = f.home.path().join(".cache/go-build");

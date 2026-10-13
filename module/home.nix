@@ -5,7 +5,11 @@
 }: let
   cfg = config.programs.doty;
   policy = import ./policy.nix {inherit lib;};
-  rootArgs = lib.concatMapStringsSep " " (root: "--user-root ${lib.escapeShellArg root}") cfg.extraRoots;
+  # Match NixOS escapeSystemdExecArg: systemd parses argv itself and expands
+  # percent specifiers and dollars even inside quoted ExecStart arguments.
+  execArg = arg: lib.replaceStrings ["%" "$"] ["%%" "$$"] (builtins.toJSON arg);
+  # Environment uses systemd quoting/specifiers, but does not expand dollars.
+  environmentArg = arg: lib.replaceStrings ["%"] ["%%"] (builtins.toJSON arg);
 in {
   options.programs.doty = {
     enable = lib.mkEnableOption "caller-local Doty housekeeping";
@@ -45,8 +49,12 @@ in {
       Unit.Description = "Doty caller-local housekeeping";
       Service = {
         Type = "oneshot";
-        ExecStart = "${lib.getExe cfg.package} --mode user ${rootArgs} run --config ${lib.escapeShellArg cfg.configFile} --apply";
-        Environment = [
+        ExecStart = lib.concatMapStringsSep " " execArg (
+          [(lib.getExe cfg.package) "--mode" "user"]
+          ++ lib.concatMap (root: ["--user-root" root]) cfg.extraRoots
+          ++ ["run" "--config" cfg.configFile "--apply"]
+        );
+        Environment = map environmentArg [
           "HOME=${config.home.homeDirectory}"
           "XDG_CONFIG_HOME=${config.xdg.configHome}"
           "XDG_CACHE_HOME=${config.xdg.cacheHome}"

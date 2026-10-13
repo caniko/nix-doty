@@ -19,9 +19,18 @@ fn configured_dirs(settings: &Value) -> Result<Vec<String>> {
             .context("trash paths must be an array")?
             .iter()
             .map(|p| {
-                p.as_str()
-                    .context("trash path must be a string")
-                    .map(str::to_owned)
+                let path = p.as_str().context("trash path must be a string")?;
+                ensure!(
+                    std::path::Path::new(path).is_absolute(),
+                    "trash path must be absolute"
+                );
+                ensure!(
+                    !path
+                        .split('/')
+                        .any(|component| matches!(component, "." | "..")),
+                    "trash path must not contain dot components"
+                );
+                Ok(path.to_owned())
             })
             .collect();
     }
@@ -214,6 +223,26 @@ fn fmt_bytes(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trash_paths_are_absolute_and_do_not_depend_on_the_working_directory() {
+        for path in [
+            ".",
+            "relative",
+            "../trash",
+            "/trash/../other",
+            "/trash/./files",
+        ] {
+            let value = serde_json::json!({"paths":[path]});
+            assert!(configured_dirs(&value).is_err(), "{path}");
+            assert!(TrashEmpty.inspect_with_settings(&value).is_err());
+            assert!(TrashEmpty.apply_with_settings(true, true, &value).is_err());
+        }
+        assert_eq!(
+            configured_dirs(&serde_json::json!({"paths":["/intended/trash"]})).unwrap(),
+            vec!["/intended/trash"]
+        );
+    }
 
     #[test]
     fn malformed_settings_never_fall_back_to_discovered_trash() {

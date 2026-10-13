@@ -277,6 +277,65 @@ fn active_no_checkout_bisect_blocks_worktree_removal() {
 }
 
 #[test]
+fn ignored_nested_repositories_are_preserved() {
+    let fixture = Fixture::new();
+    let nested = fixture.worktree.join("cache/nested");
+    fs::create_dir_all(&nested).unwrap();
+    git(&nested, &["init", "--initial-branch=main"]);
+    fs::write(nested.join("unique.txt"), "not in the parent bundle").unwrap();
+    git(&nested, &["add", "."]);
+    let tree = git(&nested, &["write-tree"]);
+    let head = git(
+        &nested,
+        &[
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit-tree",
+            &tree,
+            "-m",
+            "independent history",
+        ],
+    );
+    git(&nested, &["update-ref", "refs/heads/main", &head]);
+    assert!(git(&fixture.worktree, &["status", "--porcelain"]).is_empty());
+    for args in [vec![], vec!["--apply"]] {
+        let output = fixture.run(&args);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("nested Git repository"));
+        assert_eq!(git(&nested, &["rev-parse", "HEAD"]), head);
+        assert_eq!(
+            fs::read_to_string(nested.join("unique.txt")).unwrap(),
+            "not in the parent bundle"
+        );
+        assert!(fixture.worktree.exists());
+    }
+}
+
+#[test]
+fn ignored_nested_gitfiles_and_dangling_git_markers_are_preserved() {
+    for symlink in [false, true] {
+        let fixture = Fixture::new();
+        let nested = fixture.worktree.join("cache/nested");
+        fs::create_dir_all(&nested).unwrap();
+        if symlink {
+            std::os::unix::fs::symlink("/nonexistent-git-directory", nested.join(".git")).unwrap();
+        } else {
+            fs::write(nested.join(".git"), "gitdir: /external/git-directory\n").unwrap();
+        }
+        for args in [vec![], vec!["--apply"]] {
+            let output = fixture.run(&args);
+            assert!(!output.status.success());
+            assert!(String::from_utf8_lossy(&output.stderr).contains("nested Git repository"));
+            assert!(fs::symlink_metadata(nested.join(".git")).is_ok());
+        }
+    }
+}
+
+#[test]
 fn changed_preservation_artifact_is_rejected() {
     let fixture = Fixture::new();
     fs::write(

@@ -171,6 +171,11 @@ pub enum Command {
 
 impl Cli {
     pub fn run(self) -> Result<()> {
+        if let Command::NixStore { path, offset } = &self.command {
+            let result = crate::nix_ledger::inspect(path.as_deref(), *offset)?;
+            println!("{}", serde_json::to_string_pretty(&result)?);
+            return Ok(());
+        }
         let context = crate::scope::ExecutionContext::current(self.mode, &self.user_root)?;
         let ledger = self.ledger.config()?;
         if context.mode == crate::scope::Mode::User {
@@ -180,11 +185,7 @@ impl Cli {
         }
         match self.command {
             Command::Worktree { command } => command.run(ledger.as_ref(), &context),
-            Command::NixStore { path, offset } => {
-                let result = crate::nix_ledger::inspect(path.as_deref(), offset)?;
-                println!("{}", serde_json::to_string_pretty(&result)?);
-                Ok(())
-            }
+            Command::NixStore { .. } => unreachable!("read-only inspection dispatched above"),
             Command::Analyze { agent } => agent.run(ledger.as_ref(), &context),
             Command::List { json } => crate::commands::list(json, &context),
             Command::Status {
