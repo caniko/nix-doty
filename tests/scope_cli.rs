@@ -633,7 +633,20 @@ fn user_retention_preserves_recent_descendants_and_unverifiable_candidates() {
             "{inspection}"
         );
     }
-    let result = success(f.run(&["run", "--apply", "--force", "--json"]));
+    let output = f.run(&["run", "--apply", "--force", "--json"]);
+    if !output.status.success() {
+        // Process use can also become unverifiable at the post-quarantine
+        // recheck (a parallel test's same-user process exits mid-scan); doty
+        // then keeps the candidate in its rm plan and reports the failure.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("quarantined candidate use active or unverifiable; retained in plan"),
+            "{stderr}"
+        );
+        assert!(cache.join("recent-descendant/keep").exists());
+        return;
+    }
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     let removed = result["reports"][0]["removed"].as_u64().unwrap();
     assert!(removed <= eligible, "{result}");
     assert_eq!(cache.join("old").exists(), removed == 0);
