@@ -2,6 +2,7 @@
 use serde_json::{Value, json};
 #[path = "../src/followup.rs"]
 mod followup;
+mod support;
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -64,8 +65,13 @@ fn read_only_nix_store_inspection_does_not_require_caller_scope() {
         .find(|p| p.is_file())
         .unwrap();
     let tool = f.home.path().join("bin/chaosbox");
-    fs::write(&tool, format!("#!{}\nprintf '%s\\n' '{{\"version\":1,\"scope\":\"private:test\",\"host\":\"fixture\",\"store\":\"daemon\",\"cleanup_authorized\":false,\"complete\":true,\"items\":[]}}'\n", shell.display())).unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    support::write_executable(
+        &tool,
+        &format!(
+            "#!{}\nprintf '%s\\n' '{{\"version\":1,\"scope\":\"private:test\",\"host\":\"fixture\",\"store\":\"daemon\",\"cleanup_authorized\":false,\"complete\":true,\"items\":[]}}'\n",
+            shell.display()
+        ),
+    );
     for home in [None, Some("/etc")] {
         let mut command = f.command(env!("CARGO_BIN_EXE_doty"));
         command.env_remove("HOME");
@@ -288,15 +294,13 @@ fn uv_inspection_and_execution_use_the_same_explicit_directory() {
         .find(|p| p.is_file())
         .unwrap();
     let tool = bin.join("uv");
-    fs::write(
+    support::write_executable(
         &tool,
-        format!(
+        &format!(
             "#!{}\nprintf '%s\\n' \"$@\" > \"$HOME/uv-args\"\n",
             shell.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     f.config("user", json!([{"name":"uv-cache", "variant":"clean"}]));
     let result = success(f.run(&["status", "--json"]));
     assert_eq!(result["inspections"][0]["path"], cache.to_str().unwrap());
@@ -352,15 +356,13 @@ fn skipped_confirm_target_does_not_block_safe_cleanup() {
         .find(|p| p.is_file())
         .unwrap();
     let tool = f.home.path().join("bin/uv");
-    fs::write(
+    support::write_executable(
         &tool,
-        format!(
+        &format!(
             "#!{}\nprintf '%s\\n' \"$@\" > \"$HOME/uv-args\"\n",
             shell.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     // Put the skipped target first to expose eager policy-wide admission.
     f.config(
         "user",
