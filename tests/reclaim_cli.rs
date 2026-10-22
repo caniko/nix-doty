@@ -2,8 +2,9 @@
 //! Exercise the real CLI against local fake cleanup tools, never the host's GC.
 use serde_json::Value;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Output};
+
+mod support;
 
 struct Fixture {
     dir: tempfile::TempDir,
@@ -29,8 +30,7 @@ impl Fixture {
             ("nix-store", gc_script),
         ] {
             let path = dir.path().join(name);
-            fs::write(&path, format!("#!{}\n{script}", shell.display())).unwrap();
-            fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+            support::write_executable(&path, &format!("#!{}\n{script}", shell.display()));
         }
         fs::write(dir.path().join("targets.json"), r#"{"targets":[{"name":"nix-store-gc","variant":"nh-clean","settings":{"scope":"user"}}]}"#).unwrap();
         Self { dir }
