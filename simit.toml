@@ -13,3 +13,18 @@ max_parallel = 2
 max_jobs = 1
 cores = 2
 artifact_retention_days = 30
+
+# Linux closure consumed by canix, published to the public canix cache on
+# trunk pushes only (secret ATTIC_TOKEN). Pull requests build but never push.
+[prebuild]
+publish_attic = true
+attic_app = ".#push-flake-inputs"
+system_runners = { x86_64-linux = "ubuntu-24.04" }
+nix_builds = [".#packages.x86_64-linux.doty"]
+push_branches = ["trunk"]
+
+[release.attic]
+cache = "canix"
+url = "https://attic.candee.baby"
+token_name = "doty"
+token_secret = "ATTIC_TOKEN"

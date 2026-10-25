@@ -96,6 +96,24 @@
           "doty-aarch64-linux" = crossPackageSet."doty-aarch64-linux";
         };
 
+        # Simit prebuild publication on trunk (secret ATTIC_TOKEN). Linux
+        # outputs only: the package canix consumes, pushed to the public
+        # canix cache.
+        apps = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+          push-flake-inputs = harbor.lib.rust.mkAtticPush {
+            inherit pkgs;
+            flake = ".";
+            paths = [defaultPackage];
+            adapter = harbor.lib.rust.mkAdapter {
+              attic = {
+                endpoint = "https://attic.candee.baby";
+                cache = "canix";
+                tokenEnvVar = "ATTIC_TOKEN";
+              };
+            };
+          };
+        };
+
         checks = {
           formatting = treefmt.config.build.check self;
           clippy = craneLib.cargoClippy (commonArgs
