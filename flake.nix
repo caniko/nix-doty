@@ -6,7 +6,37 @@
     rust-overlay.url = "github:oxalica/rust-overlay";
     crane.url = "github:ipetkov/crane";
     flake-parts.url = "github:hercules-ci/flake-parts";
-    harbor.url = "git+https://github.com/caniko/harbor.git?ref=feat/harbor-monorepo-components&rev=7d99eb50c52d0a941e2996b97c469b32a7657ef4";
+    harbor = {
+      url = "git+https://github.com/caniko/harbor.git?ref=feat/harbor-monorepo-components&rev=7d99eb50c52d0a941e2996b97c469b32a7657ef4";
+      # harbor's simit/plinth lock still names retired Codeberg remotes, one of
+      # them SSH-only, which hosted runners cannot fetch during `nix flake
+      # archive`. Repoint them to their GitHub sources at the same revisions.
+      inputs.simit.inputs.plinth.inputs = {
+        nix-pklx = {
+          url = "git+https://github.com/caniko/nix-pklx.git?ref=trunk&rev=9d8c5dac62f4402cdfee015d3999f6caae6c1818";
+          # Overriding the URL drops plinth's own follows; restore them.
+          inputs.crane.follows = "harbor/simit/plinth/crane";
+          inputs.flake-utils.follows = "harbor/simit/plinth/flake-utils";
+          inputs.nixpkgs.follows = "harbor/simit/plinth/nixpkgs";
+          inputs.rust-overlay.follows = "harbor/simit/plinth/rust-overlay";
+          inputs.plinth.url = "git+https://github.com/caniko/plinth.git?ref=trunk&rev=316b96c0b6628ddb42b4bce80010cc6978508dce";
+          inputs.rs-harbor = {
+            url = "git+https://github.com/caniko/harbor-rs.git?ref=trunk&rev=073c7e8ffdd4d9f0b5c6735ec81377d1dde6a145";
+            inputs.meta-harbor.url = "git+https://github.com/caniko/harbor-meta.git?ref=trunk&rev=d189903b657f4d0dc4f47003005f1b9260c77e89";
+            inputs.nix-opencode-lsp.url = "git+https://github.com/caniko/nix-opencode-lsp.git?ref=trunk&rev=a45718d96cdde0101ef8c20942fada0b188745f0";
+            inputs.plinth.url = "git+https://github.com/caniko/plinth.git?ref=trunk&rev=bfa970d7f38f51515e01092cd7f9fde81eef26ae";
+          };
+        };
+        rs-harbor = {
+          url = "git+https://github.com/caniko/harbor-rs.git?ref=archive/codeberg-20260820/rs-harbor/agent/fix-dioxus-sccache-dispatch&rev=e5e74218c43e1e5e84fe57926d510b030e32e17e";
+          inputs.meta-harbor.url = "git+https://github.com/caniko/harbor-meta.git?ref=trunk&rev=d189903b657f4d0dc4f47003005f1b9260c77e89";
+          inputs.nix-opencode-lsp.url = "git+https://github.com/caniko/nix-opencode-lsp.git?ref=trunk&rev=a45718d96cdde0101ef8c20942fada0b188745f0";
+          inputs.crane.follows = "harbor/simit/plinth/crane";
+          inputs.nixpkgs.follows = "harbor/simit/plinth/nixpkgs";
+          inputs.rust-overlay.follows = "harbor/simit/plinth/rust-overlay";
+        };
+      };
+    };
     treefmt-nix.follows = "harbor/treefmt-nix";
   };
 

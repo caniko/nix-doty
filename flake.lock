@@ -772,12 +772,13 @@
         "rev": "d189903b657f4d0dc4f47003005f1b9260c77e89",
         "revCount": 2,
         "type": "git",
-        "url": "https://codeberg.org/caniko/meta-harbor.git"
+        "url": "https://github.com/caniko/harbor-meta.git"
       },
       "original": {
         "ref": "trunk",
+        "rev": "d189903b657f4d0dc4f47003005f1b9260c77e89",
         "type": "git",
-        "url": "https://codeberg.org/caniko/meta-harbor.git"
+        "url": "https://github.com/caniko/harbor-meta.git"
       }
     },
     "meta-harbor_2": {
@@ -798,12 +799,13 @@
         "rev": "d189903b657f4d0dc4f47003005f1b9260c77e89",
         "revCount": 2,
         "type": "git",
-        "url": "https://codeberg.org/caniko/meta-harbor.git"
+        "url": "https://github.com/caniko/harbor-meta.git"
       },
       "original": {
         "ref": "trunk",
+        "rev": "d189903b657f4d0dc4f47003005f1b9260c77e89",
         "type": "git",
-        "url": "https://codeberg.org/caniko/meta-harbor.git"
+        "url": "https://github.com/caniko/harbor-meta.git"
       }
     },
     "nix-bundle": {
@@ -902,15 +904,17 @@
       "locked": {
         "lastModified": 1783251082,
         "narHash": "sha256-XfHlECWS/u6FWjYAMOsGk6pcGx+z3HA8WWGWR7VvTSI=",
-        "ref": "refs/heads/trunk",
+        "ref": "trunk",
         "rev": "a45718d96cdde0101ef8c20942fada0b188745f0",
         "revCount": 1,
         "type": "git",
-        "url": "ssh://git@codeberg.org/caniko/nix-opencode-lsp.git"
+        "url": "https://github.com/caniko/nix-opencode-lsp.git"
       },
       "original": {
+        "ref": "trunk",
+        "rev": "a45718d96cdde0101ef8c20942fada0b188745f0",
         "type": "git",
-        "url": "ssh://git@codeberg.org/caniko/nix-opencode-lsp.git"
+        "url": "https://github.com/caniko/nix-opencode-lsp.git"
       }
     },
     "nix-opencode-lsp_3": {
@@ -927,15 +931,17 @@
       "locked": {
         "lastModified": 1783251082,
         "narHash": "sha256-XfHlECWS/u6FWjYAMOsGk6pcGx+z3HA8WWGWR7VvTSI=",
-        "ref": "refs/heads/trunk",
+        "ref": "trunk",
         "rev": "a45718d96cdde0101ef8c20942fada0b188745f0",
         "revCount": 1,
         "type": "git",
-        "url": "ssh://git@codeberg.org/caniko/nix-opencode-lsp.git"
+        "url": "https://github.com/caniko/nix-opencode-lsp.git"
       },
       "original": {
+        "ref": "trunk",
+        "rev": "a45718d96cdde0101ef8c20942fada0b188745f0",
         "type": "git",
-        "url": "ssh://git@codeberg.org/caniko/nix-opencode-lsp.git"
+        "url": "https://github.com/caniko/nix-opencode-lsp.git"
       }
     },
     "nix-opencode-lsp_4": {
@@ -995,15 +1001,17 @@
       "locked": {
         "lastModified": 1783280956,
         "narHash": "sha256-W/nbJlXaUEx/aJtCnMN7Q9lJZtvsRYvfl8wIyqxyOP0=",
-        "ref": "refs/heads/trunk",
+        "ref": "trunk",
         "rev": "9d8c5dac62f4402cdfee015d3999f6caae6c1818",
         "revCount": 22,
         "type": "git",
-        "url": "https://codeberg.org/caniko/nix-pklx.git"
+        "url": "https://github.com/caniko/nix-pklx.git"
       },
       "original": {
+        "ref": "trunk",
+        "rev": "9d8c5dac62f4402cdfee015d3999f6caae6c1818",
         "type": "git",
-        "url": "https://codeberg.org/caniko/nix-pklx.git"
+        "url": "https://github.com/caniko/nix-pklx.git"
       }
     },
     "nixpkgs": {
@@ -1340,15 +1348,17 @@
       "locked": {
         "lastModified": 1782557969,
         "narHash": "sha256-Hmp3x+SbyvWxATAqGNpJTwk94T5Kxf4z8xuqeX/Tib0=",
-        "ref": "refs/heads/trunk",
+        "ref": "trunk",
         "rev": "316b96c0b6628ddb42b4bce80010cc6978508dce",
         "revCount": 80,
         "type": "git",
-        "url": "https://codeberg.org/caniko/plinth.git"
+        "url": "https://github.com/caniko/plinth.git"
       },
       "original": {
+        "ref": "trunk",
+        "rev": "316b96c0b6628ddb42b4bce80010cc6978508dce",
         "type": "git",
-        "url": "https://codeberg.org/caniko/plinth.git"
+        "url": "https://github.com/caniko/plinth.git"
       }
     },
     "plinth_3": {
@@ -1375,16 +1385,17 @@
       "locked": {
         "lastModified": 1781641179,
         "narHash": "sha256-7uhXgUTMAEUKN4Th1tRGDQsF3ByTH8ZGk1+WOumcU3g=",
-        "ref": "refs/heads/trunk",
+        "ref": "trunk",
         "rev": "bfa970d7f38f51515e01092cd7f9fde81eef26ae",
         "revCount": 67,
         "type": "git",
-        "url": "https://codeberg.org/caniko/plinth.git"
+        "url": "https://github.com/caniko/plinth.git"
       },
       "original": {
-        "ref": "refs/heads/trunk",
+        "ref": "trunk",
+        "rev": "bfa970d7f38f51515e01092cd7f9fde81eef26ae",
         "type": "git",
-        "url": "https://codeberg.org/caniko/plinth.git"
+        "url": "https://github.com/caniko/plinth.git"
       }
     },
     "pyproject-build-systems": {
@@ -1494,12 +1505,13 @@
         "rev": "073c7e8ffdd4d9f0b5c6735ec81377d1dde6a145",
         "revCount": 102,
         "type": "git",
-        "url": "https://codeberg.org/caniko/rs-harbor.git"
+        "url": "https://github.com/caniko/harbor-rs.git"
       },
       "original": {
         "ref": "trunk",
+        "rev": "073c7e8ffdd4d9f0b5c6735ec81377d1dde6a145",
         "type": "git",
-        "url": "https://codeberg.org/caniko/rs-harbor.git"
+        "url": "https://github.com/caniko/harbor-rs.git"
       }
     },
     "rs-harbor_2": {
@@ -1530,17 +1542,17 @@
       "locked": {
         "lastModified": 1784788351,
         "narHash": "sha256-OeICk0IyKE5v9dWFoVWK8eYEbEjxXOrnXJykAyPa73k=",
-        "ref": "agent/fix-dioxus-sccache-dispatch",
+        "ref": "archive/codeberg-20260820/rs-harbor/agent/fix-dioxus-sccache-dispatch",
         "rev": "e5e74218c43e1e5e84fe57926d510b030e32e17e",
         "revCount": 148,
         "type": "git",
-        "url": "https://codeberg.org/caniko/rs-harbor.git"
+        "url": "https://github.com/caniko/harbor-rs.git"
       },
       "original": {
-        "ref": "agent/fix-dioxus-sccache-dispatch",
+        "ref": "archive/codeberg-20260820/rs-harbor/agent/fix-dioxus-sccache-dispatch",
         "rev": "e5e74218c43e1e5e84fe57926d510b030e32e17e",
         "type": "git",
-        "url": "https://codeberg.org/caniko/rs-harbor.git"
+        "url": "https://github.com/caniko/harbor-rs.git"
       }
     },
     "rs-harbor_3": {
