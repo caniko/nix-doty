@@ -58,11 +58,11 @@ impl Variant for NhLimit {
                 freed_bytes: 0,
                 skipped: entries.saturating_sub(10),
                 errors: vec![
-                    "dry-run: would run nh clean --keep-since 14d to prune boot entries".into(),
+                    "dry-run: would run nh clean all --keep-since 14d to prune boot entries".into(),
                 ],
             });
         }
-        exec::run_stdout(&["nh", "clean", "--keep-since", "14d"])?;
+        exec::run_stdout(&["nh", "clean", "all", "--keep-since", "14d"])?;
         Ok(ApplyReport {
             framework: self.framework().name(),
             variant: self.name(),
