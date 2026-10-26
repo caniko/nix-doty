@@ -10,6 +10,11 @@
 
 ### Fixed
 
+- System mode runs `sudo`-elevated target commands directly when already root,
+  and the NixOS `doty-all` service puts `nh` and Nix on its PATH. The service
+  previously failed with "failed to execute sudo/nh".
+- `boot-generations/nh-limit` runs `nh clean all`; the bare `nh clean` form is
+  rejected by nh.
 - Worker argv protection examines complete argument fields, including URI
   query/fragment syntax and percent-encoded paths.
 - Proc references preserve literal ` (deleted)` filename suffixes alongside

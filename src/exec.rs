@@ -10,7 +10,28 @@ pub struct DirScan {
     pub truncated: bool,
 }
 
+/// Targets elevate with `sudo`, but system mode already runs as root and its
+/// service PATH need not contain sudo, so run those commands directly.
+fn drop_root_sudo<'a, 'b>(cmd: &'a [&'b str], euid: libc::uid_t) -> &'a [&'b str] {
+    if euid != 0 || cmd.first() != Some(&"sudo") {
+        return cmd;
+    }
+    let mut rest = &cmd[1..];
+    while let [flag @ ("-n" | "--"), tail @ ..] = rest {
+        rest = tail;
+        if *flag == "--" {
+            break;
+        }
+    }
+    match rest.first() {
+        Some(program) if !program.starts_with('-') => rest,
+        _ => cmd,
+    }
+}
+
 pub fn run(cmd: &[&str]) -> Result<String> {
+    // SAFETY: geteuid has no arguments or memory preconditions.
+    let cmd = drop_root_sudo(cmd, unsafe { libc::geteuid() });
     if let Some(deadline) = crate::reclaim::runtime::current_deadline() {
         let output = crate::reclaim::runtime::run_capture(cmd, deadline)?;
         anyhow::ensure!(
@@ -255,6 +276,23 @@ fn remove_stale_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn root_runs_sudo_commands_directly() {
+        let reset = ["sudo", "systemctl", "reset-failed"];
+        assert_eq!(drop_root_sudo(&reset, 0), ["systemctl", "reset-failed"]);
+        assert_eq!(drop_root_sudo(&reset, 1000), reset);
+        assert_eq!(
+            drop_root_sudo(&["sudo", "-n", "--", "nh", "clean", "all"], 0),
+            ["nh", "clean", "all"]
+        );
+        // Credential validation has no command to run directly.
+        assert_eq!(
+            drop_root_sudo(&["sudo", "-n", "-v"], 0),
+            ["sudo", "-n", "-v"]
+        );
+        assert_eq!(drop_root_sudo(&["nh", "clean"], 0), ["nh", "clean"]);
+    }
 
     #[test]
     fn size_scans_do_not_follow_directory_symlinks() {
