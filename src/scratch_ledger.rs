@@ -311,9 +311,15 @@ impl Config {
         let bytes = output
             .join()
             .map_err(|_| anyhow::anyhow!("scratch output reader failed"))??;
-        input
+        match input
             .join()
-            .map_err(|_| anyhow::anyhow!("scratch input writer failed"))??;
+            .map_err(|_| anyhow::anyhow!("scratch input writer failed"))?
+        {
+            // A reader may exit without draining its input; its exit status and
+            // response remain authoritative.
+            Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
+            result => result?,
+        }
         let errors = errors
             .join()
             .map_err(|_| anyhow::anyhow!("scratch error reader failed"))??;
@@ -807,6 +813,21 @@ esac
         assert!(error.to_string().contains("timed out"));
         assert!(started.elapsed() < Duration::from_secs(5));
         assert!(fake.config.require_released(&requested()).is_err());
+    }
+
+    #[test]
+    fn reader_exiting_without_draining_input_keeps_its_response() {
+        // The payload exceeds the pipe buffer, so the writer always sees EPIPE.
+        let fake = FakeChaosbox::new(
+            &held_report("pending"),
+            &held_report("pending"),
+            "printf '%s' '{\"assessed\":1}'",
+        );
+        let result = fake
+            .config
+            .invoke("assess", vec![b' '; 1 << 20], &[], Duration::from_secs(5))
+            .unwrap();
+        assert_eq!(result["assessed"], 1);
     }
 
     #[test]
