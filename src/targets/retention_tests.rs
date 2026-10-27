@@ -817,9 +817,13 @@ fn cargo_target_tmpdir_does_not_block_pruning() {
     ] {
         backdate(&path);
     }
-    let policy = settings(root.path(), &["target"]);
-    let selected = select(Kind::Cargo, &policy).unwrap();
-    assert_eq!(selected.candidates.len(), 1);
+    let mut policy = settings(root.path(), &["target"]);
+    // Other caches carry CACHEDIR.TAG too; without the cargo-builds flag tmp stays protected.
+    assert!(select(Kind::Cargo, &policy).unwrap().candidates.is_empty());
+    let json = serde_json::json!({"roots": [root.path()], "paths": [&target]});
+    assert!(!PACKAGE_PRUNE.settings(&json).unwrap().cargo_tmp);
+    policy.cargo_tmp = CARGO_PRUNE.settings(&json).unwrap().cargo_tmp;
+    assert_eq!(select(Kind::Cargo, &policy).unwrap().candidates.len(), 1);
     // Only Cargo's own top-level tmp is exempt; deeper tmp dirs stay protected.
     fs::create_dir_all(&nested).unwrap();
     backdate(&nested);

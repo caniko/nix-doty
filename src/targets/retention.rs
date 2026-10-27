@@ -150,6 +150,9 @@ struct Settings {
     max_bytes: Option<u64>,
     #[serde(skip)]
     check_processes: bool,
+    // Set by the cargo-builds variants only: Cargo owns `<target>/tmp`.
+    #[serde(skip)]
+    cargo_tmp: bool,
 }
 
 impl Default for Settings {
@@ -166,6 +169,7 @@ impl Default for Settings {
             entry_depth: 1,
             max_bytes: None,
             check_processes: true,
+            cargo_tmp: false,
         }
     }
 }
@@ -362,8 +366,9 @@ fn excluded(name: &std::ffi::OsStr) -> bool {
 fn scan_tree(path: &Path, settings: &Settings, remaining: &mut u64) -> Result<Scan> {
     let device = fs::symlink_metadata(path)?.dev();
     // Cargo owns `<target>/tmp` (CARGO_TARGET_TMPDIR) and `cargo clean` removes
-    // it; only that one directory of a proven Cargo tree escapes the exclusion.
-    let cargo_tmp = cargo_proof(path).then(|| path.join("tmp"));
+    // it; only that one directory of a proven tree escapes the exclusion, and
+    // only for cargo-builds, since other caches also carry CACHEDIR.TAG.
+    let cargo_tmp = (settings.cargo_tmp && cargo_proof(path)).then(|| path.join("tmp"));
     let mut scan = Scan {
         complete: true,
         ..Scan::default()
@@ -854,7 +859,7 @@ impl Variant for RetentionVariant {
     }
 
     fn inspect_with_settings(&self, value: &Value) -> Result<Inspection> {
-        let settings = Settings::parse(value)?;
+        let settings = self.settings(value)?;
         let selection = select(self.kind, &settings)?;
         let eligible: u64 = selection
             .candidates
@@ -905,7 +910,7 @@ impl Variant for RetentionVariant {
     }
 
     fn apply_with_settings(&self, apply: bool, force: bool, value: &Value) -> Result<ApplyReport> {
-        self.apply_settings(apply, force, &Settings::parse(value)?)
+        self.apply_settings(apply, force, &self.settings(value)?)
     }
     fn apply_scoped(
         &self,
@@ -916,11 +921,17 @@ impl Variant for RetentionVariant {
     ) -> Result<ApplyReport> {
         let value = context.settings(self.user_scope(), value)?;
         crate::rm::admit_state(context)?;
-        self.apply_settings_scoped(apply, force, &Settings::parse(&value)?, context)
+        self.apply_settings_scoped(apply, force, &self.settings(&value)?, context)
     }
 }
 
 impl RetentionVariant {
+    fn settings(&self, value: &Value) -> Result<Settings> {
+        let mut settings = Settings::parse(value)?;
+        settings.cargo_tmp = self.kind == Kind::Cargo;
+        Ok(settings)
+    }
+
     fn apply_settings(&self, apply: bool, force: bool, settings: &Settings) -> Result<ApplyReport> {
         self.apply_settings_scoped(
             apply,
