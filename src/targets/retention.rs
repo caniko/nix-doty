@@ -147,6 +147,7 @@ struct Settings {
     max_entries: u64,
     max_depth: u32,
     entry_depth: u32,
+    max_bytes: Option<u64>,
     #[serde(skip)]
     check_processes: bool,
 }
@@ -163,6 +164,7 @@ impl Default for Settings {
             max_entries: 1_000_000,
             max_depth: 64,
             entry_depth: 1,
+            max_bytes: None,
             check_processes: true,
         }
     }
@@ -193,6 +195,7 @@ impl Settings {
             result.entry_depth > 0 && result.entry_depth <= 4,
             "entryDepth must be 1..=4"
         );
+        ensure!(result.max_bytes != Some(0), "maxBytes must be positive");
         for path in result
             .roots
             .iter()
@@ -509,6 +512,10 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
         .context("invalid age cutoff")?;
     let mut owners = BTreeMap::new();
     let mut seen = BTreeSet::new();
+    // Budget mode (Cargo + maxBytes): each path holds many build dirs, so every
+    // enumerated child is proven on its own and young ones can be evicted by size.
+    let budget = settings.max_bytes.filter(|_| kind == Kind::Cargo);
+    let mut reserve = Vec::new();
     for path in &settings.paths {
         let root = settings.root_for(path)?;
         if fs::symlink_metadata(path)
@@ -528,7 +535,8 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
             continue;
         }
         guard_retention_path(path, root)?;
-        if matches!(kind, Kind::Cargo | Kind::Incremental) && !cargo_proof(path) {
+        if matches!(kind, Kind::Cargo | Kind::Incremental) && budget.is_none() && !cargo_proof(path)
+        {
             selection
                 .skipped
                 .push(format!("{}: no Cargo output proof", path.display()));
@@ -537,6 +545,7 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
         let entries = match kind {
             Kind::Incremental => incremental_entries(path, &mut remaining),
             Kind::Packages => at_depth(path, settings.entry_depth, &mut remaining),
+            Kind::Cargo if budget.is_some() => at_depth(path, settings.entry_depth, &mut remaining),
             _ => Ok(vec![path.clone()]),
         };
         let entries = match entries {
@@ -559,13 +568,19 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
                     .push(format!("{}: excluded", entry.display()));
                 continue;
             }
+            if budget.is_some() && !cargo_proof(&entry) {
+                selection
+                    .skipped
+                    .push(format!("{}: no Cargo output proof", entry.display()));
+                continue;
+            }
             let scan = scan_tree(&entry, settings, &mut remaining)?;
             selection.logical_bytes = selection.logical_bytes.saturating_add(scan.logical_bytes);
             selection.allocated_bytes = selection
                 .allocated_bytes
                 .saturating_add(scan.allocated_bytes);
             selection.complete &= scan.complete;
-            let reason = if !scan.complete {
+            let mut reason = if !scan.complete {
                 Some("incomplete/protected/excluded tree")
             } else if settings
                 .pinned_paths
@@ -582,6 +597,13 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
             } else {
                 None
             };
+            // A young but otherwise eligible tree may still be evicted to meet the budget.
+            let young = budget.is_some()
+                && reason == Some("recent descendant activity")
+                && scan.newest.is_some();
+            if young {
+                reason = None;
+            }
             if let Some(reason) = reason {
                 selection
                     .skipped
@@ -627,12 +649,39 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
                     .push(format!("{}: {error}", entry.display()));
                 continue;
             }
-            selection.candidates.push(Candidate {
+            let candidate = Candidate {
                 path: entry,
                 root: root.to_path_buf(),
                 activity_root,
                 scan,
-            });
+            };
+            if young {
+                reserve.push(candidate);
+            } else {
+                selection.candidates.push(candidate);
+            }
+        }
+    }
+    if let Some(max_bytes) = budget {
+        // Oldest-first, like canix_preflight_cache::cleanup_plan.
+        let mut remaining_bytes = selection.allocated_bytes.saturating_sub(
+            selection
+                .candidates
+                .iter()
+                .map(|candidate| candidate.scan.allocated_bytes)
+                .sum(),
+        );
+        reserve.sort_by_key(|candidate| candidate.scan.newest);
+        for candidate in reserve {
+            if remaining_bytes > max_bytes {
+                remaining_bytes = remaining_bytes.saturating_sub(candidate.scan.allocated_bytes);
+                selection.candidates.push(candidate);
+            } else {
+                selection.skipped.push(format!(
+                    "{}: recent descendant activity",
+                    candidate.path.display()
+                ));
+            }
         }
     }
     selection.candidates.sort_by(|a, b| a.path.cmp(&b.path));

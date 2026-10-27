@@ -31,6 +31,7 @@ These variants share the following settings. Unknown fields are rejected.
 | `maxEntries` | `1000000` | Report-wide discovery/metadata budget, including directory entries |
 | `maxDepth` | `64` | Maximum candidate scan depth |
 | `entryDepth` | `1` | Cache candidate depth below each path, from 1 through 4 |
+| `maxBytes` | unset | `prune-targets` only: byte budget for all Cargo build dirs under each path. See below |
 | `pinnedPaths` | `[]` | Protect paths and any overlapping candidates |
 | `retiredPaths` | `[]` | Exact model paths eligible for retirement |
 | `approvedPaths` | `[]` | Exact legacy/campaign paths approved for quarantine |
@@ -46,6 +47,17 @@ Cargo targets require a valid `CACHEDIR.TAG` or a real `debug/.fingerprint` or
 `release/.fingerprint` directory. Incremental retention preserves `deps`,
 fingerprints and other outputs. Keep persistent build roots outside repositories;
 repository protection also applies to incremental children.
+
+Setting `maxBytes` on `cargo-builds` switches `paths` to a build-dir root: each
+child at `entryDepth` is a separate Cargo output, proven on its own (the path
+itself needs no proof). Cargo's `build.build-dir = "<path>/{workspace-path-hash}"`
+creates `<path>/<2 hex>/<hash>`, so use `entryDepth = 2`. After the `minAgeDays`
+selection, if the allocated bytes of all proven entries still exceed `maxBytes`,
+the oldest remaining entries (by newest descendant timestamp) are also selected
+until the total fits, even if younger than `minAgeDays`. Incomplete, pinned and
+process-referenced entries are never selected, so the budget can stay exceeded.
+Without `maxBytes` behavior is unchanged. Example:
+`{roots = ["/data/scratch"]; paths = ["/data/scratch/cargo-build"]; entryDepth = 2; minAgeDays = 7; maxBytes = 375809638400;}`
 
 For caches, choose only regenerable cache namespaces. Doty does not understand
 arbitrary package indexes or application data. Cache checks include references to

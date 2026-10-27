@@ -743,3 +743,55 @@ fn retention_apply_round_trip_in_isolated_process() {
     crate::rm::restore(&retirement.id).unwrap();
     assert_eq!(fs::read(root.join("legacy/db")).unwrap(), b"preserved");
 }
+
+#[test]
+fn cargo_byte_budget_evicts_only_the_oldest_young_build_dirs() {
+    let root = tempfile::tempdir().unwrap();
+    let now = SystemTime::now();
+    // Cargo's {workspace-path-hash} build-dir template yields <path>/<2 hex>/<hash>.
+    for (name, age_hours) in [("aa/old", 30), ("bb/mid", 20), ("cc/new", 10)] {
+        let dir = root.path().join("cargo").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("CACHEDIR.TAG"),
+            b"Signature: 8a477f597d28d172789f06886806bc55\n",
+        )
+        .unwrap();
+        fs::write(dir.join("blob"), vec![1u8; 64 * 1024]).unwrap();
+        let when = now - Duration::from_secs(age_hours * 3600);
+        for file in ["CACHEDIR.TAG", "blob", ""] {
+            fs::File::open(dir.join(file))
+                .unwrap()
+                .set_modified(when)
+                .unwrap();
+        }
+    }
+    let selected = |max_bytes: Option<u64>| {
+        let mut policy = settings(root.path(), &["cargo"]);
+        policy.entry_depth = 2;
+        policy.max_bytes = max_bytes;
+        select(Kind::Cargo, &policy).unwrap()
+    };
+    let total = selected(Some(u64::MAX)).allocated_bytes;
+    assert!(selected(Some(u64::MAX)).candidates.is_empty());
+    // Without maxBytes the path itself needs proof and is the single candidate.
+    assert!(selected(None).candidates.is_empty());
+    let legacy = root.path().join("legacy");
+    fs::create_dir_all(&legacy).unwrap();
+    fs::write(
+        legacy.join("CACHEDIR.TAG"),
+        b"Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    backdate(&legacy.join("CACHEDIR.TAG"));
+    backdate(&legacy);
+    let old = select(Kind::Cargo, &settings(root.path(), &["legacy"])).unwrap();
+    assert_eq!(old.candidates.len(), 1);
+    assert_eq!(old.candidates[0].path, legacy);
+    // Dropping one build dir is enough; the two newer ones are kept.
+    let one = selected(Some(total - 1)).candidates;
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].path, root.path().join("cargo/aa/old"));
+    assert_eq!(selected(Some(1)).candidates.len(), 3);
+    assert!(Settings::parse(&serde_json::json!({"maxBytes": 0})).is_err());
+}
