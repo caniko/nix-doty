@@ -39,6 +39,8 @@ These variants share the following settings. Unknown fields are rejected.
 An empty selection is a no-op. Missing configured paths are reported and skipped.
 Use roots on the same filesystem as their candidates. No symlink is followed.
 `tmp`, `.tmp`, `.git`, `.doty-protect` and `.doty-quarantine` subtrees are excluded.
+For `cargo-builds`, a proven tree's own top-level `tmp` (Cargo's `CARGO_TARGET_TMPDIR`,
+removed by `cargo clean`) is the one exception; deeper `tmp` directories are not.
 Any candidate containing one of these, a symlink, special file, mount boundary,
 unknown age, unreadable content or an incomplete scan is preserved. Independently
 complete sibling candidates may still be reclaimed.

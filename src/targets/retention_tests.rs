@@ -822,6 +822,9 @@ fn cargo_target_tmpdir_does_not_block_pruning() {
     assert!(select(Kind::Cargo, &policy).unwrap().candidates.is_empty());
     let json = serde_json::json!({"roots": [root.path()], "paths": [&target]});
     assert!(!PACKAGE_PRUNE.settings(&json).unwrap().cargo_tmp);
+    let budgeted = serde_json::json!({"roots": [root.path()], "paths": [&target], "maxBytes": 1});
+    assert!(PACKAGE_PRUNE.settings(&budgeted).is_err());
+    assert!(INCREMENTAL_PRUNE.settings(&budgeted).is_err());
     policy.cargo_tmp = CARGO_PRUNE.settings(&json).unwrap().cargo_tmp;
     assert_eq!(select(Kind::Cargo, &policy).unwrap().candidates.len(), 1);
     // Only Cargo's own top-level tmp is exempt; deeper tmp dirs stay protected.
