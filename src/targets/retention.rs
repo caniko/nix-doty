@@ -933,8 +933,8 @@ impl RetentionVariant {
     fn settings(&self, value: &Value) -> Result<Settings> {
         let mut settings = Settings::parse(value)?;
         ensure!(
-            settings.max_bytes.is_none() || self.kind == Kind::Cargo,
-            "maxBytes applies only to cargo-builds"
+            settings.max_bytes.is_none() || (self.kind == Kind::Cargo && !self.report_only),
+            "maxBytes applies only to cargo-builds prune-targets"
         );
         settings.cargo_tmp = self.kind == Kind::Cargo;
         Ok(settings)
