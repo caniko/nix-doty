@@ -426,6 +426,10 @@ fn scan_tree(path: &Path, settings: &Settings, remaining: &mut u64) -> Result<Sc
         } else if depth >= settings.max_depth {
             scan.complete = false;
         } else {
+            // Directories cannot be hardlinked; their blocks count toward maxBytes too.
+            scan.allocated_bytes = scan
+                .allocated_bytes
+                .saturating_add(meta.blocks().saturating_mul(512));
             match children(&current, remaining) {
                 Ok(entries) => {
                     stack.extend(entries.into_iter().rev().map(|entry| (entry, depth + 1)))
