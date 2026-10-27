@@ -28,6 +28,8 @@ in {
     environment.etc."doty/targets.json".source = targetsJson;
     systemd.services.doty-all = {
       description = "doty: run configured system cleanup targets";
+      # Nix retention targets run nh and the Nix CLI.
+      path = [config.nix.package pkgs.nh];
       serviceConfig = {
         Type = "oneshot";
         ExecStart = "${lib.getExe cfg.package} --mode system run --apply";

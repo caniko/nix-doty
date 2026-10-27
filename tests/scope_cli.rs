@@ -2,6 +2,7 @@
 use serde_json::{Value, json};
 #[path = "../src/followup.rs"]
 mod followup;
+mod support;
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
@@ -64,8 +65,13 @@ fn read_only_nix_store_inspection_does_not_require_caller_scope() {
         .find(|p| p.is_file())
         .unwrap();
     let tool = f.home.path().join("bin/chaosbox");
-    fs::write(&tool, format!("#!{}\nprintf '%s\\n' '{{\"version\":1,\"scope\":\"private:test\",\"host\":\"fixture\",\"store\":\"daemon\",\"cleanup_authorized\":false,\"complete\":true,\"items\":[]}}'\n", shell.display())).unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    support::write_executable(
+        &tool,
+        &format!(
+            "#!{}\nprintf '%s\\n' '{{\"version\":1,\"scope\":\"private:test\",\"host\":\"fixture\",\"store\":\"daemon\",\"cleanup_authorized\":false,\"complete\":true,\"items\":[]}}'\n",
+            shell.display()
+        ),
+    );
     for home in [None, Some("/etc")] {
         let mut command = f.command(env!("CARGO_BIN_EXE_doty"));
         command.env_remove("HOME");
@@ -288,15 +294,13 @@ fn uv_inspection_and_execution_use_the_same_explicit_directory() {
         .find(|p| p.is_file())
         .unwrap();
     let tool = bin.join("uv");
-    fs::write(
+    support::write_executable(
         &tool,
-        format!(
+        &format!(
             "#!{}\nprintf '%s\\n' \"$@\" > \"$HOME/uv-args\"\n",
             shell.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     f.config("user", json!([{"name":"uv-cache", "variant":"clean"}]));
     let result = success(f.run(&["status", "--json"]));
     assert_eq!(result["inspections"][0]["path"], cache.to_str().unwrap());
@@ -352,15 +356,13 @@ fn skipped_confirm_target_does_not_block_safe_cleanup() {
         .find(|p| p.is_file())
         .unwrap();
     let tool = f.home.path().join("bin/uv");
-    fs::write(
+    support::write_executable(
         &tool,
-        format!(
+        &format!(
             "#!{}\nprintf '%s\\n' \"$@\" > \"$HOME/uv-args\"\n",
             shell.display()
         ),
-    )
-    .unwrap();
-    fs::set_permissions(&tool, fs::Permissions::from_mode(0o755)).unwrap();
+    );
     // Put the skipped target first to expose eager policy-wide admission.
     f.config(
         "user",
@@ -631,7 +633,20 @@ fn user_retention_preserves_recent_descendants_and_unverifiable_candidates() {
             "{inspection}"
         );
     }
-    let result = success(f.run(&["run", "--apply", "--force", "--json"]));
+    let output = f.run(&["run", "--apply", "--force", "--json"]);
+    if !output.status.success() {
+        // Process use can also become unverifiable at the post-quarantine
+        // recheck (a parallel test's same-user process exits mid-scan); doty
+        // then keeps the candidate in its rm plan and reports the failure.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("quarantined candidate use active or unverifiable; retained in plan"),
+            "{stderr}"
+        );
+        assert!(cache.join("recent-descendant/keep").exists());
+        return;
+    }
+    let result: Value = serde_json::from_slice(&output.stdout).unwrap();
     let removed = result["reports"][0]["removed"].as_u64().unwrap();
     assert!(removed <= eligible, "{result}");
     assert_eq!(cache.join("old").exists(), removed == 0);

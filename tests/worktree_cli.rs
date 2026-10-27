@@ -2,9 +2,10 @@
 //! Real linked worktrees and bundles; all mutation stays inside disposable fixtures.
 use serde_json::{Value, json};
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
+
+mod support;
 
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
@@ -400,8 +401,15 @@ fn fake_chaosbox(fixture: &Fixture, link_result: &str, entries: Vec<Value>) -> V
         .find(|path| path.is_file())
         .unwrap();
     let binary = parent.join("chaosbox");
-    fs::write(&binary, format!("#!{}\nset -eu\ncd '{}'\nwhile [ $# -gt 0 ]; do case \"$1\" in query|link) action=$1; shift; break;; *) shift;; esac; done\nprintf '%s\\n' \"$action\" >> calls\nif [ \"$action\" = query ]; then cat query.json; else\n  test -d '{}'\n  printf '%s\\n' \"$@\" > link-args\n  {link_result}\nfi\n", shell.display(), parent.display(), fixture.worktree.display())).unwrap();
-    fs::set_permissions(&binary, fs::Permissions::from_mode(0o755)).unwrap();
+    support::write_executable(
+        &binary,
+        &format!(
+            "#!{}\nset -eu\ncd '{}'\nwhile [ $# -gt 0 ]; do case \"$1\" in query|link) action=$1; shift; break;; *) shift;; esac; done\nprintf '%s\\n' \"$action\" >> calls\nif [ \"$action\" = query ]; then cat query.json; else\n  test -d '{}'\n  printf '%s\\n' \"$@\" > link-args\n  {link_result}\nfi\n",
+            shell.display(),
+            parent.display(),
+            fixture.worktree.display()
+        ),
+    );
     vec![
         "--chaosbox-work".into(),
         parent.join("ledger").display().to_string(),
@@ -542,7 +550,7 @@ fn chaosbox_preview_is_read_only_and_apply_requires_link_readback() {
     let script = fs::read_to_string(&binary)
         .unwrap()
         .replace("printf '{", "cp linked.json query.json\n  printf '{");
-    fs::write(binary, script).unwrap();
+    support::write_executable(&binary, &script);
     args.push("--apply".into());
     let output = fixture.run(&args.iter().map(String::as_str).collect::<Vec<_>>());
     assert!(
@@ -820,7 +828,7 @@ fn changes_during_linkage_are_rechecked_before_removal() {
             fixture.worktree.join("source.txt").display()
         ),
     );
-    fs::write(binary, script).unwrap();
+    support::write_executable(&binary, &script);
     args.push("--apply".into());
     let output = fixture.run(&args.iter().map(String::as_str).collect::<Vec<_>>());
     assert!(!output.status.success());
