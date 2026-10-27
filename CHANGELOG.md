@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- `cargo-builds` no longer treats Cargo's own `<target>/tmp` (`CARGO_TARGET_TMPDIR`)
+  as protected content, which had made most target dirs permanently ineligible.
 - Worker argv protection examines complete argument fields, including URI
   query/fragment syntax and percent-encoded paths.
 - Proc references preserve literal ` (deleted)` filename suffixes alongside

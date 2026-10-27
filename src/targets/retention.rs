@@ -361,6 +361,9 @@ fn excluded(name: &std::ffi::OsStr) -> bool {
 /// trees cannot become deletion candidates, and age includes all descendants.
 fn scan_tree(path: &Path, settings: &Settings, remaining: &mut u64) -> Result<Scan> {
     let device = fs::symlink_metadata(path)?.dev();
+    // Cargo owns `<target>/tmp` (CARGO_TARGET_TMPDIR) and `cargo clean` removes
+    // it; only that one directory of a proven Cargo tree escapes the exclusion.
+    let cargo_tmp = cargo_proof(path).then(|| path.join("tmp"));
     let mut scan = Scan {
         complete: true,
         ..Scan::default()
@@ -382,7 +385,7 @@ fn scan_tree(path: &Path, settings: &Settings, remaining: &mut u64) -> Result<Sc
                 continue;
             }
         };
-        if current.file_name().is_some_and(excluded)
+        if (current.file_name().is_some_and(excluded) && cargo_tmp.as_ref() != Some(&current))
             || meta.dev() != device
             || (!meta.is_dir() && !meta.is_file())
         {

@@ -795,3 +795,35 @@ fn cargo_byte_budget_evicts_only_the_oldest_young_build_dirs() {
     assert_eq!(selected(Some(1)).candidates.len(), 3);
     assert!(Settings::parse(&serde_json::json!({"maxBytes": 0})).is_err());
 }
+
+#[test]
+fn cargo_target_tmpdir_does_not_block_pruning() {
+    let root = tempfile::tempdir().unwrap();
+    let target = root.path().join("target");
+    let nested = target.join("debug/tmp");
+    fs::create_dir_all(target.join("tmp/case")).unwrap();
+    fs::write(
+        target.join("CACHEDIR.TAG"),
+        b"Signature: 8a477f597d28d172789f06886806bc55\n",
+    )
+    .unwrap();
+    fs::write(target.join("tmp/case/out"), b"x").unwrap();
+    for path in [
+        target.join("tmp/case/out"),
+        target.join("tmp/case"),
+        target.join("tmp"),
+        target.join("CACHEDIR.TAG"),
+        target.clone(),
+    ] {
+        backdate(&path);
+    }
+    let policy = settings(root.path(), &["target"]);
+    let selected = select(Kind::Cargo, &policy).unwrap();
+    assert_eq!(selected.candidates.len(), 1);
+    // Only Cargo's own top-level tmp is exempt; deeper tmp dirs stay protected.
+    fs::create_dir_all(&nested).unwrap();
+    backdate(&nested);
+    backdate(&target.join("debug"));
+    backdate(&target);
+    assert!(select(Kind::Cargo, &policy).unwrap().candidates.is_empty());
+}
