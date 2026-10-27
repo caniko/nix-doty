@@ -147,8 +147,12 @@ struct Settings {
     max_entries: u64,
     max_depth: u32,
     entry_depth: u32,
+    max_bytes: Option<u64>,
     #[serde(skip)]
     check_processes: bool,
+    // Set by the cargo-builds variants only: Cargo owns `<target>/tmp`.
+    #[serde(skip)]
+    cargo_tmp: bool,
 }
 
 impl Default for Settings {
@@ -163,7 +167,9 @@ impl Default for Settings {
             max_entries: 1_000_000,
             max_depth: 64,
             entry_depth: 1,
+            max_bytes: None,
             check_processes: true,
+            cargo_tmp: false,
         }
     }
 }
@@ -193,6 +199,7 @@ impl Settings {
             result.entry_depth > 0 && result.entry_depth <= 4,
             "entryDepth must be 1..=4"
         );
+        ensure!(result.max_bytes != Some(0), "maxBytes must be positive");
         for path in result
             .roots
             .iter()
@@ -358,6 +365,10 @@ fn excluded(name: &std::ffi::OsStr) -> bool {
 /// trees cannot become deletion candidates, and age includes all descendants.
 fn scan_tree(path: &Path, settings: &Settings, remaining: &mut u64) -> Result<Scan> {
     let device = fs::symlink_metadata(path)?.dev();
+    // Cargo owns `<target>/tmp` (CARGO_TARGET_TMPDIR) and `cargo clean` removes
+    // it; only that one directory of a proven tree escapes the exclusion, and
+    // only for cargo-builds, since other caches also carry CACHEDIR.TAG.
+    let cargo_tmp = (settings.cargo_tmp && cargo_proof(path)).then(|| path.join("tmp"));
     let mut scan = Scan {
         complete: true,
         ..Scan::default()
@@ -379,7 +390,7 @@ fn scan_tree(path: &Path, settings: &Settings, remaining: &mut u64) -> Result<Sc
                 continue;
             }
         };
-        if current.file_name().is_some_and(excluded)
+        if (current.file_name().is_some_and(excluded) && cargo_tmp.as_ref() != Some(&current))
             || meta.dev() != device
             || (!meta.is_dir() && !meta.is_file())
         {
@@ -415,6 +426,10 @@ fn scan_tree(path: &Path, settings: &Settings, remaining: &mut u64) -> Result<Sc
         } else if depth >= settings.max_depth {
             scan.complete = false;
         } else {
+            // Directories cannot be hardlinked; their blocks count toward maxBytes too.
+            scan.allocated_bytes = scan
+                .allocated_bytes
+                .saturating_add(meta.blocks().saturating_mul(512));
             match children(&current, remaining) {
                 Ok(entries) => {
                     stack.extend(entries.into_iter().rev().map(|entry| (entry, depth + 1)))
@@ -509,6 +524,10 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
         .context("invalid age cutoff")?;
     let mut owners = BTreeMap::new();
     let mut seen = BTreeSet::new();
+    // Budget mode (Cargo + maxBytes): each path holds many build dirs, so every
+    // enumerated child is proven on its own and young ones can be evicted by size.
+    let budget = settings.max_bytes.filter(|_| kind == Kind::Cargo);
+    let mut reserve = Vec::new();
     for path in &settings.paths {
         let root = settings.root_for(path)?;
         if fs::symlink_metadata(path)
@@ -528,7 +547,8 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
             continue;
         }
         guard_retention_path(path, root)?;
-        if matches!(kind, Kind::Cargo | Kind::Incremental) && !cargo_proof(path) {
+        if matches!(kind, Kind::Cargo | Kind::Incremental) && budget.is_none() && !cargo_proof(path)
+        {
             selection
                 .skipped
                 .push(format!("{}: no Cargo output proof", path.display()));
@@ -537,6 +557,7 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
         let entries = match kind {
             Kind::Incremental => incremental_entries(path, &mut remaining),
             Kind::Packages => at_depth(path, settings.entry_depth, &mut remaining),
+            Kind::Cargo if budget.is_some() => at_depth(path, settings.entry_depth, &mut remaining),
             _ => Ok(vec![path.clone()]),
         };
         let entries = match entries {
@@ -559,13 +580,19 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
                     .push(format!("{}: excluded", entry.display()));
                 continue;
             }
+            if budget.is_some() && !cargo_proof(&entry) {
+                selection
+                    .skipped
+                    .push(format!("{}: no Cargo output proof", entry.display()));
+                continue;
+            }
             let scan = scan_tree(&entry, settings, &mut remaining)?;
             selection.logical_bytes = selection.logical_bytes.saturating_add(scan.logical_bytes);
             selection.allocated_bytes = selection
                 .allocated_bytes
                 .saturating_add(scan.allocated_bytes);
             selection.complete &= scan.complete;
-            let reason = if !scan.complete {
+            let mut reason = if !scan.complete {
                 Some("incomplete/protected/excluded tree")
             } else if settings
                 .pinned_paths
@@ -582,6 +609,13 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
             } else {
                 None
             };
+            // A young but otherwise eligible tree may still be evicted to meet the budget.
+            let young = budget.is_some()
+                && reason == Some("recent descendant activity")
+                && scan.newest.is_some();
+            if young {
+                reason = None;
+            }
             if let Some(reason) = reason {
                 selection
                     .skipped
@@ -627,12 +661,39 @@ fn select(kind: Kind, settings: &Settings) -> Result<Selection> {
                     .push(format!("{}: {error}", entry.display()));
                 continue;
             }
-            selection.candidates.push(Candidate {
+            let candidate = Candidate {
                 path: entry,
                 root: root.to_path_buf(),
                 activity_root,
                 scan,
-            });
+            };
+            if young {
+                reserve.push(candidate);
+            } else {
+                selection.candidates.push(candidate);
+            }
+        }
+    }
+    if let Some(max_bytes) = budget {
+        // Oldest-first, like canix_preflight_cache::cleanup_plan.
+        let mut remaining_bytes = selection.allocated_bytes.saturating_sub(
+            selection
+                .candidates
+                .iter()
+                .map(|candidate| candidate.scan.allocated_bytes)
+                .sum(),
+        );
+        reserve.sort_by_key(|candidate| candidate.scan.newest);
+        for candidate in reserve {
+            if remaining_bytes > max_bytes {
+                remaining_bytes = remaining_bytes.saturating_sub(candidate.scan.allocated_bytes);
+                selection.candidates.push(candidate);
+            } else {
+                selection.skipped.push(format!(
+                    "{}: recent descendant activity",
+                    candidate.path.display()
+                ));
+            }
         }
     }
     selection.candidates.sort_by(|a, b| a.path.cmp(&b.path));
@@ -802,7 +863,7 @@ impl Variant for RetentionVariant {
     }
 
     fn inspect_with_settings(&self, value: &Value) -> Result<Inspection> {
-        let settings = Settings::parse(value)?;
+        let settings = self.settings(value)?;
         let selection = select(self.kind, &settings)?;
         let eligible: u64 = selection
             .candidates
@@ -853,7 +914,7 @@ impl Variant for RetentionVariant {
     }
 
     fn apply_with_settings(&self, apply: bool, force: bool, value: &Value) -> Result<ApplyReport> {
-        self.apply_settings(apply, force, &Settings::parse(value)?)
+        self.apply_settings(apply, force, &self.settings(value)?)
     }
     fn apply_scoped(
         &self,
@@ -864,11 +925,21 @@ impl Variant for RetentionVariant {
     ) -> Result<ApplyReport> {
         let value = context.settings(self.user_scope(), value)?;
         crate::rm::admit_state(context)?;
-        self.apply_settings_scoped(apply, force, &Settings::parse(&value)?, context)
+        self.apply_settings_scoped(apply, force, &self.settings(&value)?, context)
     }
 }
 
 impl RetentionVariant {
+    fn settings(&self, value: &Value) -> Result<Settings> {
+        let mut settings = Settings::parse(value)?;
+        ensure!(
+            settings.max_bytes.is_none() || (self.kind == Kind::Cargo && !self.report_only),
+            "maxBytes applies only to cargo-builds prune-targets"
+        );
+        settings.cargo_tmp = self.kind == Kind::Cargo;
+        Ok(settings)
+    }
+
     fn apply_settings(&self, apply: bool, force: bool, settings: &Settings) -> Result<ApplyReport> {
         self.apply_settings_scoped(
             apply,

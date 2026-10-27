@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- `cargo-builds` `prune-targets` accepts `maxBytes`: each child at `entryDepth` of a
+  path is a separately proven Cargo build dir, and the oldest are pruned past
+  `minAgeDays` until the total fits. See `docs/persistent-retention.md`.
+
 ### Changed
 
 - Doty defaults to caller-local user policy under `$XDG_CONFIG_HOME/doty`.
@@ -10,6 +16,8 @@
 
 ### Fixed
 
+- `cargo-builds` no longer treats Cargo's own `<target>/tmp` (`CARGO_TARGET_TMPDIR`)
+  as protected content, which had made most target dirs permanently ineligible.
 - Worker argv protection examines complete argument fields, including URI
   query/fragment syntax and percent-encoded paths.
 - Proc references preserve literal ` (deleted)` filename suffixes alongside
