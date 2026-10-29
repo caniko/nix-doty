@@ -94,7 +94,7 @@
         commonArgs = {
           src = craneLib.cleanCargoSource ./.;
           strictDeps = true;
-          nativeBuildInputs = [pkgs.gitMinimal pkgs.coreutils] ++ lib.optionals pkgs.stdenv.isLinux [pkgs.util-linux];
+          nativeBuildInputs = [pkgs.gitMinimal pkgs.coreutils] ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [pkgs.util-linux];
         };
 
         cargoArtifacts = craneLib.buildDepsOnly commonArgs;
