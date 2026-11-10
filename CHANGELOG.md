@@ -16,6 +16,8 @@
 
 ### Fixed
 
+- `nixosModules.default` sets `services.doty.package` with `lib.mkDefault`, so a
+  consumer can select its own build without `mkForce`.
 - `cargo-builds` no longer treats Cargo's own `<target>/tmp` (`CARGO_TARGET_TMPDIR`)
   as protected content, which had made most target dirs permanently ineligible.
 - System mode runs `sudo`-elevated target commands directly when already root,

@@ -179,9 +179,13 @@
         };
         homeModules.default = self.homeManagerModules.default;
         crossPackages."x86_64-linux"."aarch64-linux".doty = self.packages."x86_64-linux"."doty-aarch64-linux";
-        nixosModules.default = {pkgs, ...}: {
+        nixosModules.default = {
+          pkgs,
+          lib,
+          ...
+        }: {
           imports = [./module/default.nix];
-          services.doty.package = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+          services.doty.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
         };
       };
     };
