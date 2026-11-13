@@ -813,6 +813,26 @@ fn process_link(path: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// Candidates still unchanged since inspection. A tree that changed (a build
+/// writing into it) is kept and counted as skipped instead of failing the run.
+fn verified<'a>(
+    candidates: &'a [Candidate],
+    settings: &Settings,
+    report: &mut ApplyReport,
+) -> Vec<&'a Candidate> {
+    candidates
+        .iter()
+        .filter(|candidate| match recheck(candidate, settings) {
+            Ok(()) => true,
+            Err(error) => {
+                eprintln!("Skipping {}: {error:#}", candidate.path.display());
+                report.skipped += 1;
+                false
+            }
+        })
+        .collect()
+}
+
 fn recheck(candidate: &Candidate, settings: &Settings) -> Result<()> {
     guard_retention_path(&candidate.path, &candidate.root)?;
     let mut remaining = settings.max_entries;
@@ -976,9 +996,9 @@ impl RetentionVariant {
         }
         // Completeness is per candidate: a protected or budget-limited sibling
         // cannot authorize its own removal or block an independently verified tree.
+        let verified = verified(&selection.candidates, settings, &mut report);
         let mut groups: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
-        for candidate in &selection.candidates {
-            recheck(candidate, settings)?;
+        for candidate in &verified {
             groups
                 .entry(candidate.root.clone())
                 .or_default()
@@ -993,7 +1013,7 @@ impl RetentionVariant {
                 .or_insert((root.clone(), usage.available_bytes));
             plans.push(crate::rm::plan_removal(root, paths)?);
         }
-        for candidate in &selection.candidates {
+        for candidate in &verified {
             recheck(candidate, settings)?;
         }
         for plan in plans {

@@ -488,6 +488,18 @@ fn changed_descendant_invalidates_prepared_candidate() {
     fs::write(root.path().join("cache/old/item"), b"new work").unwrap();
     assert!(recheck(&selected.candidates[0], &policy).is_err());
     assert!(root.path().join("cache/old/item").exists());
+    // Apply keeps the changed tree and counts it as skipped instead of failing.
+    let mut report = ApplyReport {
+        framework: "test",
+        variant: "test",
+        removed: 0,
+        freed_bytes: 0,
+        skipped: 0,
+        errors: vec![],
+    };
+    assert!(verified(&selected.candidates, &policy, &mut report).is_empty());
+    assert_eq!(report.skipped, 1);
+    assert!(root.path().join("cache/old/item").exists());
 }
 
 #[test]
