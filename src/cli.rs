@@ -15,6 +15,9 @@ pub struct Cli {
     /// Additional caller-owned root for external caches, scratch or worktrees
     #[arg(long, global = true)]
     user_root: Vec<std::path::PathBuf>,
+    /// Queue this mutation for root approval through canix rops instead of running it
+    #[arg(long, global = true)]
+    pub(crate) rops: bool,
     #[command(flatten)]
     ledger: crate::scratch_ledger::Options,
     #[command(subcommand)]
@@ -171,6 +174,9 @@ pub enum Command {
 
 impl Cli {
     pub fn run(self) -> Result<()> {
+        if self.rops {
+            return crate::rops::submit(self.mode, &self.user_root, &self.command);
+        }
         if let Command::NixStore { path, offset } = &self.command {
             let result = crate::nix_ledger::inspect(path.as_deref(), *offset)?;
             println!("{}", serde_json::to_string_pretty(&result)?);

@@ -4,6 +4,11 @@
 
 ### Added
 
+- `--rops` queues `run --apply`, `reclaim --apply`, and `rm --apply` as one root
+  argv for operator approval through `canix host rops` instead of running them
+  unprivileged. `purge` and `rm --plan` stay unsupported because their removal
+  plans live under the caller's XDG state directory. See
+  `docs/execution-modes.md`.
 - `cargo-builds` `prune-targets` accepts `maxBytes`: each child at `entryDepth` of a
   path is a separately proven Cargo build dir, and the oldest are pruned past
   `minAgeDays` until the total fits. See `docs/persistent-retention.md`.

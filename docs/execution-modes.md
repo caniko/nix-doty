@@ -50,6 +50,38 @@ environment variable. Shared caches remain system policy. Trash defaults to
 `$XDG_DATA_HOME/Trash`; additional volume trash locations can be configured using
 `settings.paths` and require caller ownership.
 
+## Root approval from an unprivileged session
+
+`--rops` queues a system-mode mutation for operator approval through
+`canix host rops` instead of running it. It requires `--mode system`, refuses
+`--rops` from root, and accepts only the mutating forms:
+
+```sh
+doty --mode system run --apply --rops
+doty --mode system reclaim --apply --rops --mount /data
+doty --mode system rm --apply --rops -- /data/scratch/tmp/opencode/stale
+```
+
+The queued transaction has one step: the absolute path of the running `doty`
+plus the original arguments with `--rops` removed. Relative `--config`,
+`--root`, `--mount`, `--chaosbox-work`, `--chaosbox-root`, `--chaosbox-bin` and
+`rm` path arguments are made absolute first, because the approving root session
+does not share the caller's working directory. The step runs in the operator's
+root environment, not the caller's.
+
+Text output prints the transaction id and the approval command; `--json` prints
+`{"rops": {"id": ..., "host": ...}}`. For example:
+
+```sh
+$ doty --mode system run --apply --rops
+Queued 20261114T180000-a1b2c3 for atlas. Approve with `canix host rops atlas`; follow with `canix host rops watch 20261114T180000-a1b2c3`.
+```
+
+`purge --apply` and `rm --apply --plan <id>` are rejected: removal plans live
+under the caller's XDG state directory (`$XDG_STATE_HOME/doty`), which the
+approving root session does not read. Queue `rm --apply` with explicit paths
+instead; that approved session creates and applies the plan as root.
+
 ## Home Manager
 
 Import `doty.homeManagerModules.default` (also exported as `homeModules.default`):

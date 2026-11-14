@@ -13,6 +13,7 @@ mod process_path;
 pub mod reclaim;
 pub mod registry;
 pub mod rm;
+mod rops;
 pub mod scope;
 mod scratch_ledger;
 pub mod targets;
