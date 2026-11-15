@@ -757,6 +757,89 @@ fn retention_apply_round_trip_in_isolated_process() {
 }
 
 #[test]
+fn a_candidate_changed_after_planning_is_skipped_without_failing_the_run() {
+    let Some(root) = std::env::var_os("DOTY_RETENTION_CHANGE_FIXTURE") else {
+        let fixture = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "targets::retention::tests::a_candidate_changed_after_planning_is_skipped_without_failing_the_run",
+                "--nocapture",
+            ])
+            .env("DOTY_RETENTION_CHANGE_FIXTURE", fixture.path())
+            .env("DOTY_STATE_DIR", fixture.path().join("state"))
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    };
+    let root = PathBuf::from(root);
+    for name in ["busy", "idle"] {
+        let dir = root.join("cache").join(name);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("item"), b"old").unwrap();
+        backdate(&dir.join("item"));
+        backdate(&dir);
+    }
+    let policy = settings(&root, &["cache"]);
+    let plans = || -> Vec<crate::rm::RmPlan> {
+        fs::read_dir(root.join("state/rm-plans"))
+            .map(|entries| {
+                entries
+                    .map(|entry| entry.unwrap().path())
+                    .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+                    .map(|path| serde_json::from_slice(&fs::read(path).unwrap()).unwrap())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+
+    // A build writes into `busy` while its plan is journaled.
+    let busy = root.join("cache/busy");
+    AFTER_PLAN.with(|hook| {
+        let busy = busy.clone();
+        *hook.borrow_mut() = Some(Box::new(move |path: &Path| {
+            if path == busy {
+                fs::write(busy.join("fresh"), b"new").unwrap();
+            }
+        }));
+    });
+    let applied = PACKAGE_PRUNE.apply_settings(true, true, &policy).unwrap();
+    assert_eq!((applied.removed, applied.skipped), (1, 1));
+    assert!(!root.join("cache/idle").exists());
+    assert_eq!(fs::read(busy.join("item")).unwrap(), b"old");
+    assert!(busy.join("fresh").exists());
+    assert!(
+        plans()
+            .iter()
+            .all(|plan| plan.targets.iter().all(|target| target.path != busy)),
+        "the skipped candidate's journal must be discarded"
+    );
+
+    // Every candidate changes: nothing is removed and nothing is claimed freed.
+    fs::remove_file(busy.join("fresh")).unwrap();
+    backdate(&busy.join("item"));
+    backdate(&busy);
+    AFTER_PLAN.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(|path: &Path| {
+            fs::write(path.join("fresh"), b"new").unwrap();
+        }));
+    });
+    let applied = PACKAGE_PRUNE.apply_settings(true, true, &policy).unwrap();
+    assert_eq!(
+        (applied.removed, applied.skipped, applied.freed_bytes),
+        (0, 1, 0)
+    );
+    assert!(busy.join("item").exists());
+    AFTER_PLAN.with(|hook| *hook.borrow_mut() = None);
+}
+
+#[test]
 fn cargo_byte_budget_evicts_only_the_oldest_young_build_dirs() {
     let root = tempfile::tempdir().unwrap();
     let now = SystemTime::now();

@@ -816,12 +816,12 @@ fn process_link(path: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
 /// Candidates still unchanged since inspection. A tree that changed (a build
 /// writing into it) is kept and counted as skipped instead of failing the run.
 fn verified<'a>(
-    candidates: impl IntoIterator<Item = &'a Candidate>,
+    candidates: &'a [Candidate],
     settings: &Settings,
     report: &mut ApplyReport,
 ) -> Vec<&'a Candidate> {
     candidates
-        .into_iter()
+        .iter()
         .filter(|candidate| match recheck(candidate, settings) {
             Ok(()) => true,
             Err(error) => {
@@ -996,34 +996,33 @@ impl RetentionVariant {
         }
         // Completeness is per candidate: a protected or budget-limited sibling
         // cannot authorize its own removal or block an independently verified tree.
-        let inspected = verified(&selection.candidates, settings, &mut report);
+        let verified = verified(&selection.candidates, settings, &mut report);
         let mut before = BTreeMap::new();
-        for root in inspected
-            .iter()
-            .map(|candidate| &candidate.root)
-            .collect::<BTreeSet<_>>()
-        {
-            let usage = crate::mount::df(&root.to_string_lossy())?;
+        for candidate in verified {
+            // One plan per candidate. Planning walks and journals the tree, so
+            // the recheck follows it, right before the rename: a tree a live
+            // build changed meanwhile is skipped and its never-applied journal
+            // dropped, instead of renaming it or aborting the other removals.
+            let plan =
+                crate::rm::plan_removal(&candidate.root, std::slice::from_ref(&candidate.path))?;
+            #[cfg(test)]
+            AFTER_PLAN.with(|hook| {
+                if let Some(hook) = &*hook.borrow() {
+                    hook(&candidate.path);
+                }
+            });
+            if let Err(error) = recheck(candidate, settings) {
+                eprintln!("Skipping {}: {error:#}", candidate.path.display());
+                report.skipped += 1;
+                crate::rm::discard_unapplied(&plan.id)?;
+                continue;
+            }
+            // Measured before the first removal on each device, and only for
+            // devices something is removed from.
+            let usage = crate::mount::df(&candidate.root.to_string_lossy())?;
             before
                 .entry(usage.device)
-                .or_insert((root.clone(), usage.available_bytes));
-        }
-        // Recheck right before the journal so a tree a live build changed
-        // since inspection is skipped and never planned or renamed, instead
-        // of aborting every other candidate's removal.
-        let verified = verified(inspected, settings, &mut report);
-        let mut groups: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
-        for candidate in &verified {
-            groups
-                .entry(candidate.root.clone())
-                .or_default()
-                .push(candidate.path.clone());
-        }
-        let mut plans = Vec::new();
-        for (root, paths) in &groups {
-            plans.push(crate::rm::plan_removal(root, paths)?);
-        }
-        for plan in plans {
+                .or_insert((candidate.root.clone(), usage.available_bytes));
             eprintln!(
                 "Retention plan {}: restore with `{}`; quarantine alone frees no disk space",
                 plan.id,
@@ -1080,6 +1079,16 @@ impl RetentionVariant {
         }
         Ok(report)
     }
+}
+
+// Runs after each candidate's plan is journaled, before its recheck, so a test
+// can change the tree in exactly that window.
+#[cfg(test)]
+type PlanHook = Box<dyn Fn(&Path)>;
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_PLAN: std::cell::RefCell<Option<PlanHook>> = const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
