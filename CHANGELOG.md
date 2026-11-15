@@ -21,6 +21,10 @@
 
 ### Fixed
 
+- `prune-targets` (and every retention variant) no longer fails the whole run
+  when a build changes a candidate after inspection: the last recheck now runs
+  before the removal plan is written, so that tree is skipped and never
+  planned or renamed, as the first recheck already did.
 - `nixosModules.default` sets `services.doty.package` with `lib.mkDefault`, so a
   consumer can select its own build without `mkForce`.
 - `cargo-builds` no longer treats Cargo's own `<target>/tmp` (`CARGO_TARGET_TMPDIR`)

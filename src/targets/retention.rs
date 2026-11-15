@@ -816,12 +816,12 @@ fn process_link(path: &Path, paths: &mut BTreeSet<PathBuf>) -> Result<()> {
 /// Candidates still unchanged since inspection. A tree that changed (a build
 /// writing into it) is kept and counted as skipped instead of failing the run.
 fn verified<'a>(
-    candidates: &'a [Candidate],
+    candidates: impl IntoIterator<Item = &'a Candidate>,
     settings: &Settings,
     report: &mut ApplyReport,
 ) -> Vec<&'a Candidate> {
     candidates
-        .iter()
+        .into_iter()
         .filter(|candidate| match recheck(candidate, settings) {
             Ok(()) => true,
             Err(error) => {
@@ -996,7 +996,22 @@ impl RetentionVariant {
         }
         // Completeness is per candidate: a protected or budget-limited sibling
         // cannot authorize its own removal or block an independently verified tree.
-        let verified = verified(&selection.candidates, settings, &mut report);
+        let inspected = verified(&selection.candidates, settings, &mut report);
+        let mut before = BTreeMap::new();
+        for root in inspected
+            .iter()
+            .map(|candidate| &candidate.root)
+            .collect::<BTreeSet<_>>()
+        {
+            let usage = crate::mount::df(&root.to_string_lossy())?;
+            before
+                .entry(usage.device)
+                .or_insert((root.clone(), usage.available_bytes));
+        }
+        // Recheck right before the journal so a tree a live build changed
+        // since inspection is skipped and never planned or renamed, instead
+        // of aborting every other candidate's removal.
+        let verified = verified(inspected, settings, &mut report);
         let mut groups: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
         for candidate in &verified {
             groups
@@ -1005,16 +1020,8 @@ impl RetentionVariant {
                 .push(candidate.path.clone());
         }
         let mut plans = Vec::new();
-        let mut before = BTreeMap::new();
         for (root, paths) in &groups {
-            let usage = crate::mount::df(&root.to_string_lossy())?;
-            before
-                .entry(usage.device)
-                .or_insert((root.clone(), usage.available_bytes));
             plans.push(crate::rm::plan_removal(root, paths)?);
-        }
-        for candidate in &verified {
-            recheck(candidate, settings)?;
         }
         for plan in plans {
             eprintln!(
