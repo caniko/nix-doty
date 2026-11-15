@@ -1216,6 +1216,20 @@ fn chrono_now_rfc3339() -> String {
     }
 }
 
+/// Drop the journal of a plan that was never applied: no target has a pending
+/// or completed rename, so nothing exists to restore. Refuses a started plan.
+pub(crate) fn discard_unapplied(id: &str) -> Result<()> {
+    let _lock = lock_plan(id)?;
+    let plan = load_plan(id)?;
+    ensure!(
+        plan.targets
+            .iter()
+            .all(|target| target.pending_op.is_none() && target.quarantined_as.is_none()),
+        "plan {id} has started; restore it instead of discarding"
+    );
+    std::fs::remove_file(plan_path(id)).with_context(|| format!("cannot discard plan {id}"))
+}
+
 /// Describe a recorded plan without mutating anything. Works for unapplied
 /// plans (review before apply) as well as in-progress ones.
 pub fn describe_plan(id: &str) -> Result<RmPlan> {

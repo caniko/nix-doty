@@ -997,26 +997,47 @@ impl RetentionVariant {
         // Completeness is per candidate: a protected or budget-limited sibling
         // cannot authorize its own removal or block an independently verified tree.
         let verified = verified(&selection.candidates, settings, &mut report);
-        let mut groups: BTreeMap<PathBuf, Vec<PathBuf>> = BTreeMap::new();
-        for candidate in &verified {
-            groups
-                .entry(candidate.root.clone())
-                .or_default()
-                .push(candidate.path.clone());
-        }
-        let mut plans = Vec::new();
         let mut before = BTreeMap::new();
-        for (root, paths) in &groups {
-            let usage = crate::mount::df(&root.to_string_lossy())?;
+        for candidate in verified {
+            // One plan per candidate. Planning walks and journals the tree, so
+            // the recheck follows it, right before the rename: a tree a live
+            // build changed meanwhile is skipped and its never-applied journal
+            // dropped, instead of renaming it or aborting the other removals.
+            #[cfg(test)]
+            plan_hook(&candidate.path, PlanStage::Before);
+            let plan = match crate::rm::plan_removal(
+                &candidate.root,
+                std::slice::from_ref(&candidate.path),
+            ) {
+                Ok(plan) => plan,
+                // A build changing the tree mid-walk (an entry vanishing) fails
+                // planning before any journal is written: skip it. A failure on
+                // an unchanged tree is real.
+                Err(error) => match recheck(candidate, settings) {
+                    Err(changed) => {
+                        eprintln!("Skipping {}: {changed:#}", candidate.path.display());
+                        report.skipped += 1;
+                        continue;
+                    }
+                    Ok(()) => return Err(error),
+                },
+            };
+            #[cfg(test)]
+            plan_hook(&candidate.path, PlanStage::After);
+            // `df` runs findmnt, so it goes before the final recheck: nothing
+            // but the rename may follow that recheck.
+            let usage = crate::mount::df(&candidate.root.to_string_lossy())?;
+            if let Err(error) = recheck(candidate, settings) {
+                eprintln!("Skipping {}: {error:#}", candidate.path.display());
+                report.skipped += 1;
+                crate::rm::discard_unapplied(&plan.id)?;
+                continue;
+            }
+            // Only devices something is removed from count toward freed bytes,
+            // each from its first removal.
             before
                 .entry(usage.device)
-                .or_insert((root.clone(), usage.available_bytes));
-            plans.push(crate::rm::plan_removal(root, paths)?);
-        }
-        for candidate in &verified {
-            recheck(candidate, settings)?;
-        }
-        for plan in plans {
+                .or_insert((candidate.root.clone(), usage.available_bytes));
             eprintln!(
                 "Retention plan {}: restore with `{}`; quarantine alone frees no disk space",
                 plan.id,
@@ -1073,6 +1094,32 @@ impl RetentionVariant {
         }
         Ok(report)
     }
+}
+
+/// Where a test changes a candidate's tree: before its plan is written (so
+/// planning fails) or after it, before the final recheck.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlanStage {
+    Before,
+    After,
+}
+
+#[cfg(test)]
+type PlanHook = Box<dyn Fn(&Path, PlanStage)>;
+
+#[cfg(test)]
+thread_local! {
+    static PLAN_HOOK: std::cell::RefCell<Option<PlanHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn plan_hook(path: &Path, stage: PlanStage) {
+    PLAN_HOOK.with(|hook| {
+        if let Some(hook) = &*hook.borrow() {
+            hook(path, stage);
+        }
+    });
 }
 
 #[cfg(test)]
