@@ -801,10 +801,10 @@ fn a_candidate_changed_after_planning_is_skipped_without_failing_the_run() {
 
     // A build writes into `busy` while its plan is journaled.
     let busy = root.join("cache/busy");
-    AFTER_PLAN.with(|hook| {
+    PLAN_HOOK.with(|hook| {
         let busy = busy.clone();
-        *hook.borrow_mut() = Some(Box::new(move |path: &Path| {
-            if path == busy {
+        *hook.borrow_mut() = Some(Box::new(move |path: &Path, stage| {
+            if stage == PlanStage::After && path == busy {
                 fs::write(busy.join("fresh"), b"new").unwrap();
             }
         }));
@@ -825,9 +825,11 @@ fn a_candidate_changed_after_planning_is_skipped_without_failing_the_run() {
     fs::remove_file(busy.join("fresh")).unwrap();
     backdate(&busy.join("item"));
     backdate(&busy);
-    AFTER_PLAN.with(|hook| {
-        *hook.borrow_mut() = Some(Box::new(|path: &Path| {
-            fs::write(path.join("fresh"), b"new").unwrap();
+    PLAN_HOOK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(|path: &Path, stage| {
+            if stage == PlanStage::After {
+                fs::write(path.join("fresh"), b"new").unwrap();
+            }
         }));
     });
     let applied = PACKAGE_PRUNE.apply_settings(true, true, &policy).unwrap();
@@ -836,7 +838,30 @@ fn a_candidate_changed_after_planning_is_skipped_without_failing_the_run() {
         (0, 1, 0)
     );
     assert!(busy.join("item").exists());
-    AFTER_PLAN.with(|hook| *hook.borrow_mut() = None);
+
+    // A build removes the tree before its plan: planning fails, and that is a
+    // skip too, with no journal left behind.
+    fs::remove_file(busy.join("fresh")).unwrap();
+    backdate(&busy.join("item"));
+    backdate(&busy);
+    PLAN_HOOK.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(|path: &Path, stage| {
+            if stage == PlanStage::Before {
+                fs::remove_dir_all(path).unwrap();
+            }
+        }));
+    });
+    let applied = PACKAGE_PRUNE.apply_settings(true, true, &policy).unwrap();
+    assert_eq!(
+        (applied.removed, applied.skipped, applied.freed_bytes),
+        (0, 1, 0)
+    );
+    assert!(
+        plans()
+            .iter()
+            .all(|plan| plan.targets.iter().all(|target| target.path != busy))
+    );
+    PLAN_HOOK.with(|hook| *hook.borrow_mut() = None);
 }
 
 #[test]

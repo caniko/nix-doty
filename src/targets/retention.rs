@@ -1003,23 +1003,38 @@ impl RetentionVariant {
             // the recheck follows it, right before the rename: a tree a live
             // build changed meanwhile is skipped and its never-applied journal
             // dropped, instead of renaming it or aborting the other removals.
-            let plan =
-                crate::rm::plan_removal(&candidate.root, std::slice::from_ref(&candidate.path))?;
             #[cfg(test)]
-            AFTER_PLAN.with(|hook| {
-                if let Some(hook) = &*hook.borrow() {
-                    hook(&candidate.path);
-                }
-            });
+            plan_hook(&candidate.path, PlanStage::Before);
+            let plan = match crate::rm::plan_removal(
+                &candidate.root,
+                std::slice::from_ref(&candidate.path),
+            ) {
+                Ok(plan) => plan,
+                // A build changing the tree mid-walk (an entry vanishing) fails
+                // planning before any journal is written: skip it. A failure on
+                // an unchanged tree is real.
+                Err(error) => match recheck(candidate, settings) {
+                    Err(changed) => {
+                        eprintln!("Skipping {}: {changed:#}", candidate.path.display());
+                        report.skipped += 1;
+                        continue;
+                    }
+                    Ok(()) => return Err(error),
+                },
+            };
+            #[cfg(test)]
+            plan_hook(&candidate.path, PlanStage::After);
+            // `df` runs findmnt, so it goes before the final recheck: nothing
+            // but the rename may follow that recheck.
+            let usage = crate::mount::df(&candidate.root.to_string_lossy())?;
             if let Err(error) = recheck(candidate, settings) {
                 eprintln!("Skipping {}: {error:#}", candidate.path.display());
                 report.skipped += 1;
                 crate::rm::discard_unapplied(&plan.id)?;
                 continue;
             }
-            // Measured before the first removal on each device, and only for
-            // devices something is removed from.
-            let usage = crate::mount::df(&candidate.root.to_string_lossy())?;
+            // Only devices something is removed from count toward freed bytes,
+            // each from its first removal.
             before
                 .entry(usage.device)
                 .or_insert((candidate.root.clone(), usage.available_bytes));
@@ -1081,14 +1096,30 @@ impl RetentionVariant {
     }
 }
 
-// Runs after each candidate's plan is journaled, before its recheck, so a test
-// can change the tree in exactly that window.
+/// Where a test changes a candidate's tree: before its plan is written (so
+/// planning fails) or after it, before the final recheck.
 #[cfg(test)]
-type PlanHook = Box<dyn Fn(&Path)>;
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PlanStage {
+    Before,
+    After,
+}
+
+#[cfg(test)]
+type PlanHook = Box<dyn Fn(&Path, PlanStage)>;
 
 #[cfg(test)]
 thread_local! {
-    static AFTER_PLAN: std::cell::RefCell<Option<PlanHook>> = const { std::cell::RefCell::new(None) };
+    static PLAN_HOOK: std::cell::RefCell<Option<PlanHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn plan_hook(path: &Path, stage: PlanStage) {
+    PLAN_HOOK.with(|hook| {
+        if let Some(hook) = &*hook.borrow() {
+            hook(path, stage);
+        }
+    });
 }
 
 #[cfg(test)]
