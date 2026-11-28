@@ -20,7 +20,7 @@ static FRAMEWORK: FailedUnitsFramework = FailedUnitsFramework;
 
 pub static FAILED_UNITS: &dyn Framework = &FRAMEWORK;
 
-fn list_failed_units() -> Vec<String> {
+pub(super) fn list_failed_units() -> Vec<String> {
     exec::run_stdout(&["systemctl", "--failed", "--no-legend", "--plain"])
         .ok()
         .map(|out| {

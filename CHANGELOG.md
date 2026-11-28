@@ -12,6 +12,11 @@
 - `cargo-builds` `prune-targets` accepts `maxBytes`: each child at `entryDepth` of a
   path is a separately proven Cargo build dir, and the oldest are pruned past
   `minAgeDays` until the total fits. See `docs/persistent-retention.md`.
+- `pidfile-units` `reset-matching` clears an optional `sentinel` file, resets
+  failed units, and restarts failed units whose name contains `unitPattern`.
+- `cluster-vm-state` purges per-user VM backups, orphan home images, or VM
+  directories under each home's `stateDir` (`vmPrefix` and `backupMatch`
+  default to `vm-` and `backup`).
 
 ### Changed
 
